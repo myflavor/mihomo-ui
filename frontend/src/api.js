@@ -58,6 +58,7 @@ export const login = (password) =>
 export const getOverview = () => api('/api/overview')
 export const setMode = (mode) => api('/api/mode', { method: 'POST', body: { mode } })
 export const setTun = (enable) => api('/api/tun', { method: 'POST', body: { enable } })
+export const setLogLevel = (level) => api('/api/log-level', { method: 'POST', body: { level } })
 export const getProxies = () => api('/api/proxies')
 export const selectProxy = (group, name) =>
   api('/api/proxies/select', { method: 'POST', body: { group, name } })

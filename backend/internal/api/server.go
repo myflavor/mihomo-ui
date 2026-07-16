@@ -42,6 +42,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/api/providers/update", s.handleUpdateProvider)
 	mux.HandleFunc("/api/config", s.handleConfig)
 	mux.HandleFunc("/api/logs", s.handleLogs)
+	mux.HandleFunc("/api/log-level", s.handleLogLevel)
 		mux.HandleFunc("/api/traffic", s.handleTraffic)
 		mux.HandleFunc("/api/connections", s.handleConnections)
 
@@ -427,6 +428,33 @@ func (s *Server) handleMode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]string{"mode": mode})
+}
+
+// handleLogLevel sets the kernel log-level (debug|info|warning|error|silent).
+func (s *Server) handleLogLevel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost && r.Method != http.MethodPut && r.Method != http.MethodPatch {
+		writeErr(w, 405, errMethod)
+		return
+	}
+	var body struct {
+		Level string `json:"level"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	level := strings.ToLower(strings.TrimSpace(body.Level))
+	switch level {
+	case "debug", "info", "warning", "error", "silent":
+	default:
+		writeJSON(w, 400, map[string]string{"error": "level must be debug|info|warning|error|silent"})
+		return
+	}
+	if err := s.Mihomo.PatchConfigs(r.Context(), map[string]any{"log-level": level}); err != nil {
+		writeErr(w, 502, err)
+		return
+	}
+	writeJSON(w, 200, map[string]string{"level": level})
 }
 
 func (s *Server) handleTun(w http.ResponseWriter, r *http.Request) {

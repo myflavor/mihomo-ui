@@ -1,10 +1,10 @@
 <script setup>
 import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { authHeaders } from '../api'
+import { authHeaders, getOverview, setLogLevel } from '../api'
 
 const levels = [
-  { key: 'info', label: 'Info' },
   { key: 'debug', label: 'Debug' },
+  { key: 'info', label: 'Info' },
   { key: 'warning', label: 'Warning' },
   { key: 'error', label: 'Error' },
 ]
@@ -12,6 +12,7 @@ const levels = [
 const level = ref('info')
 const lines = ref([])
 const paused = ref(false)
+const busy = ref(false)
 // idle | connecting | live | error
 const status = ref('idle')
 const autoScroll = ref(true)
@@ -94,7 +95,7 @@ async function start() {
       if (done) break
       buf += decoder.decode(value, { stream: true })
       let idx
-      while ((idx = buf.indexOf('\n')) >= 0) {
+      while ((idx = buf.indexOf('\\n')) >= 0) {
         const line = buf.slice(0, idx).trim()
         buf = buf.slice(idx + 1)
         if (!line) continue
@@ -153,13 +154,40 @@ function togglePause() {
   paused.value = !paused.value
 }
 
-watch(level, () => {
-  lines.value = []
-  backoffMs = 1000
+async function changeLevel(l) {
+  if (busy.value || l === level.value) return
+  busy.value = true
+  const prev = level.value
+  level.value = l
+  try {
+    await setLogLevel(l)
+    // reconnect stream at new level, keep history (no clear)
+    backoffMs = 1000
+    start()
+  } catch (e) {
+    level.value = prev
+    window.$toast?.(e.message || '设置日志级别失败')
+  } finally {
+    busy.value = false
+  }
+}
+
+async function loadInitialLevel() {
+  try {
+    const ov = await getOverview()
+    const l = (ov?.['log-level'] || '').toLowerCase()
+    if (l && levels.some((x) => x.key === l)) {
+      level.value = l
+    }
+  } catch {
+    // keep default
+  }
+}
+
+onMounted(async () => {
+  await loadInitialLevel()
   start()
 })
-
-onMounted(start)
 onUnmounted(stop)
 </script>
 
@@ -174,14 +202,15 @@ onUnmounted(stop)
     </div>
 
     <div class="card" style="padding: 12px 14px; margin-bottom: 10px">
-      <div class="row" style="flex-wrap: wrap; gap: 10px">
+      <div class="row" style="flex-wrap: wrap; gap: 10px; align-items: center">
         <div class="pill-group">
           <button
             v-for="l in levels"
             :key="l.key"
             class="pill"
             :class="{ active: level === l.key }"
-            @click="level = l.key"
+            :disabled="busy"
+            @click="changeLevel(l.key)"
           >
             {{ l.label }}
           </button>
