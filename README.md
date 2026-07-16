@@ -17,15 +17,15 @@ docker run -d --name mihomo-ui \
   -e UI_PASSWORD=mihomo-ui \
   -e MIHOMO_SECRET=mihomo \
   -v "$PWD/data:/data/mihomo-ui" \
-  ghcr.io/myflavor/mihomo-ui:latest
+  ghcr.io/myflavor/mihomo-ui
 ```
 
 或 Compose：
 
 ```yaml
 services:
-  mihomo-ui:
-    image: ghcr.io/myflavor/mihomo-ui:latest
+  app:
+    image: ghcr.io/myflavor/mihomo-ui
     restart: unless-stopped
     network_mode: host
     cap_add:
