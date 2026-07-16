@@ -79,7 +79,9 @@ async function start() {
   const ctrl = new AbortController()
   es = ctrl
   try {
-    const res = await fetch(`/api/logs?level=${encodeURIComponent(level.value)}`, {
+    // Always subscribe at debug so level changes only reconfigure the kernel;
+    // the stream itself stays connected and does not need reconnect.
+    const res = await fetch('/api/logs?level=debug', {
       signal: ctrl.signal,
       headers: authHeaders({ Accept: 'application/x-ndjson' }),
     })
@@ -95,7 +97,7 @@ async function start() {
       if (done) break
       buf += decoder.decode(value, { stream: true })
       let idx
-      while ((idx = buf.indexOf('\\n')) >= 0) {
+      while ((idx = buf.indexOf('\n')) >= 0) {
         const line = buf.slice(0, idx).trim()
         buf = buf.slice(idx + 1)
         if (!line) continue
@@ -123,14 +125,10 @@ function pushLine(raw) {
   let type = ''
   try {
     const j = JSON.parse(raw)
-    type = j.type || j.level || ''
-    if (type === 'ping') return
+    type = (j.type || j.level || '').toString().toLowerCase()
+    if (type === 'ping' || type === 'connected') return
     const p = j.payload || j.message || j.msg || raw
-    if (type === 'connected') {
-      payload = p || '已连接'
-    } else {
-      payload = type ? `[${type}] ${p}` : String(p)
-    }
+    payload = type ? `[${type}] ${p}` : String(p)
   } catch {
     // plain text
   }
@@ -160,10 +158,8 @@ async function changeLevel(l) {
   const prev = level.value
   level.value = l
   try {
+    // Only patch kernel log-level; keep the existing stream open.
     await setLogLevel(l)
-    // reconnect stream at new level, keep history (no clear)
-    backoffMs = 1000
-    start()
   } catch (e) {
     level.value = prev
     window.$toast?.(e.message || '设置日志级别失败')

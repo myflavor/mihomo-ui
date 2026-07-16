@@ -74,7 +74,7 @@ docker compose up -d
 mihomo/config.yaml = base.yaml ⊕ 当前配置 ⊕ settings 开关 ⊕ MIHOMO_SECRET
 ```
 
-- 同一时刻只有一个**当前配置**，切换即热重载
+- 同一时刻只有一个**当前配置**，切换即生效
 - 配置尽量原样交给内核（含 `proxy-providers` / `rule-providers`）
 - 模式 / 日志级别 / TUN 写在 `settings.yaml`，换配置后仍保留
 - `secret`、`external-controller` 由运行时强制写入，不必写进 base

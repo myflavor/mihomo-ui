@@ -35,7 +35,6 @@ const cfgBusy = ref(false)
 const cfgId = ref('')
 const cfgName = ref('')
 const cfgActive = ref(false)
-const cfgPath = ref('')
 const cfgContent = ref('')
 const cfgOriginal = ref('')
 const cfgDirty = computed(() => cfgContent.value !== cfgOriginal.value)
@@ -136,10 +135,8 @@ async function openConfig(item, e) {
   cfgLoading.value = true
   cfgContent.value = ''
   cfgOriginal.value = ''
-  cfgPath.value = ''
   try {
     const data = await getConfigRaw(item.id)
-    cfgPath.value = data.path || ''
     cfgContent.value = data.content || ''
     cfgOriginal.value = cfgContent.value
     cfgActive.value = !!data.active
@@ -264,22 +261,26 @@ async function onCardClick(item) {
 
 async function doRefresh() {
   menuId.value = ''
-  if (!activeId.value) {
-    window.$toast?.('请先选择一个配置')
+  if (!items.value.length) {
+    window.$toast?.('还没有配置')
     return
   }
-  const active = items.value.find((i) => i.active)
-  if (!active) return
-  if (active.source === 'file') {
-    window.$toast?.('当前是本地文件，已跳过更新')
+  const urlItems = items.value.filter((i) => i.source !== 'file' && i.url)
+  if (!urlItems.length) {
+    window.$toast?.('没有可更新的 URL 配置')
     return
   }
   busy.value = true
-  window.$toast?.('正在更新…')
+  window.$toast?.(`正在更新 ${urlItems.length} 个配置…`)
   try {
     const res = await refreshConfigs()
+    const n = res?.refreshed ?? urlItems.length
     const fails = res?.errors?.length ? `（${res.errors[0]}）` : ''
-    window.$toast?.(res?.ok === false ? `更新完成但有错误${fails}` : `已更新${fails}`)
+    if (res?.ok === false) {
+      window.$toast?.(`更新完成但有错误${fails}`)
+    } else {
+      window.$toast?.(`已更新 ${n} 个配置${fails}`)
+    }
     await refresh()
   } catch (err) {
     window.$toast?.(err.message)
@@ -319,14 +320,11 @@ async function saveCfg() {
   try {
     const res = await saveConfigRaw(cfgId.value, cfgContent.value)
     if (res.ok === '0') {
-      window.$toast?.(res.error || '已写入原始配置，但内核重载失败')
-    } else if (res.applied) {
-      window.$toast?.('已保存并热重载内核')
+      window.$toast?.(res.error || '保存失败')
     } else {
-      window.$toast?.('已保存原始配置')
+      window.$toast?.('已保存')
     }
     cfgOriginal.value = cfgContent.value
-    if (res.path) cfgPath.value = res.path
   } catch (e) {
     window.$toast?.(e.message)
   } finally {
@@ -498,14 +496,16 @@ onUnmounted(() => {
     <div v-if="showConfig" class="modal-mask modal-mask-full" @click.self="showConfig = false">
       <div class="modal modal-editor">
         <div class="modal-editor-head">
-          <div>
-            <h3>编辑配置 · {{ cfgName }}</h3>
-            <div class="sub mono">{{ cfgPath || '…' }}</div>
-            <div class="sub" style="margin-top: 4px">
-              {{ cfgActive ? '当前配置：保存后会合并并热重载内核' : '非当前：仅保存原始文件' }}
-            </div>
-          </div>
-          <button class="btn btn-ghost btn-sm" @click="showConfig = false">关闭</button>
+          <h3 class="modal-editor-title">编辑配置 · {{ cfgName }}</h3>
+          <button
+            type="button"
+            class="modal-close"
+            title="关闭"
+            aria-label="关闭"
+            @click="showConfig = false"
+          >
+            ×
+          </button>
         </div>
         <div v-if="cfgLoading" class="empty" style="padding: 24px">加载中…</div>
         <textarea
@@ -517,7 +517,7 @@ onUnmounted(() => {
         <div class="modal-actions">
           <button class="btn btn-ghost" :disabled="cfgBusy || !cfgDirty" @click="resetCfg">还原</button>
           <button class="btn btn-primary" :disabled="cfgBusy || cfgLoading || !cfgDirty" @click="saveCfg">
-            {{ cfgActive ? '保存并重载' : '保存' }}
+            保存
           </button>
         </div>
       </div>

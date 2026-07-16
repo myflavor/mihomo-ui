@@ -1157,33 +1157,71 @@ func (s *Server) handleRefreshConfigs(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 405, errMethod)
 		return
 	}
-	// forceRefresh: re-download active URL config into raw file, then apply
-	res, err := s.applyAndReload(r, true)
-	if err != nil {
-		writeErr(w, 502, err)
-		return
-	}
-	out, err := s.Mihomo.Providers(r.Context())
+
+	// Refresh ALL url configs (re-download raw). File sources are skipped.
+	// Then install the current active config and update providers.
+	result := &configgen.ApplyResult{}
 	var errs []string
-	if err == nil {
+	refreshed := 0
+	skipped := 0
+
+	for _, cfg := range s.Store.List() {
+		if cfg.Source == "file" || cfg.URL == "" {
+			skipped++
+			continue
+		}
+		br, err := configgen.EnsureConfig(s.ConfigDir, cfg, true)
+		if br != nil {
+			result.Warnings = append(result.Warnings, br.Warnings...)
+			result.Failed = append(result.Failed, br.Failed...)
+		}
+		if err != nil {
+			errs = append(errs, cfg.Name+": "+err.Error())
+			continue
+		}
+		// touch updatedAt
+		_, _ = s.Store.Update(cfg.ID, store.ConfigPatch{})
+		refreshed++
+		result.OK++
+	}
+
+	// Install current active (from refreshed raw if any; file active still reinstalls).
+	ir, err := s.applyAndReload(r, false)
+	if ir != nil {
+		result.Failed = append(result.Failed, ir.Failed...)
+		result.Warnings = append(result.Warnings, ir.Warnings...)
+		if ir.OK > 0 {
+			result.OK += ir.OK
+		}
+	}
+	if err != nil {
+		errs = append(errs, err.Error())
+	}
+
+	// Update mihomo providers for the active install.
+	out, perr := s.Mihomo.Providers(r.Context())
+	if perr == nil {
 		providers, _ := out["providers"].(map[string]any)
 		for name, raw := range providers {
 			m, _ := raw.(map[string]any)
 			if vt, _ := m["vehicleType"].(string); vt == "Compatible" {
 				continue
 			}
-			if err := s.Mihomo.UpdateProvider(r.Context(), name); err != nil {
-				errs = append(errs, name+": "+err.Error())
+			if uerr := s.Mihomo.UpdateProvider(r.Context(), name); uerr != nil {
+				errs = append(errs, name+": "+uerr.Error())
 			}
 		}
 	}
-	if res != nil {
-		errs = append(errs, res.Failed...)
+	if result != nil {
+		errs = append(errs, result.Failed...)
 	}
+
 	writeJSON(w, 200, map[string]any{
 		"ok":          len(errs) == 0,
 		"config-path": s.ConfigPath,
-		"detail":      res,
+		"refreshed":   refreshed,
+		"skipped":     skipped,
+		"detail":      result,
 		"errors":      errs,
 	})
 }
