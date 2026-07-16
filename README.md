@@ -13,7 +13,7 @@ docker run -d --name mihomo-ui \
   --network host --cap-add NET_ADMIN \
   --device /dev/net/tun:/dev/net/tun \
   -e TZ=Asia/Shanghai \
-  -e UI_ADDR=:8080 \
+  -e UI_ADDR=:7080 \
   -e UI_PASSWORD=mihomo-ui \
   -e MIHOMO_SECRET=mihomo \
   -v "$PWD/data:/data/mihomo-ui" \
@@ -33,7 +33,7 @@ services:
     devices: [/dev/net/tun:/dev/net/tun]
     environment:
       - TZ=Asia/Shanghai
-      - UI_ADDR=:8080
+      - UI_ADDR=:7080
       - UI_PASSWORD=mihomo-ui
       - MIHOMO_SECRET=mihomo
     volumes:
@@ -46,7 +46,7 @@ docker compose up -d
 
 | 入口 | 地址 | 说明 |
 |------|------|------|
-| 面板 | http://127.0.0.1:8080 | 密码默认 `mihomo-ui` |
+| 面板 | http://127.0.0.1:7080 | 密码默认 `mihomo-ui` |
 | 代理 | `127.0.0.1:7890` | mixed-port（HTTP / SOCKS5） |
 | 内核 API | `127.0.0.1:9090` | 仅本机；密钥默认 `mihomo` |
 
@@ -116,7 +116,7 @@ configs:
 
 | 变量 | 默认 | 说明 |
 |------|------|------|
-| `UI_ADDR` | `:8080` | 面板监听（host 网络下即本机端口） |
+| `UI_ADDR` | `:7080` | 面板监听（host 网络下即本机端口） |
 | `UI_PASSWORD` | `mihomo-ui` | 面板登录密码 |
 | `MIHOMO_SECRET` | `mihomo` | 内核 API 密钥（装载时强制覆盖） |
 | `MIHOMO_BIN` | `/mihomo` | 内核二进制路径 |

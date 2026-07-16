@@ -33,7 +33,7 @@ func main() {
 	dataHome := env("DATA_HOME", "/data/mihomo-ui")
 	mihomoDir := filepath.Join(dataHome, "mihomo")
 	uiDir := filepath.Join(dataHome, "ui")
-	addr := env("UI_ADDR", ":8080")
+	addr := env("UI_ADDR", ":7080")
 	mihomoURL := env("MIHOMO_API", "http://127.0.0.1:9090")
 	secret := env("MIHOMO_SECRET", "mihomo")
 	uiPassword := env("UI_PASSWORD", "mihomo-ui")

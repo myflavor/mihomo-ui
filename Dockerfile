@@ -25,12 +25,12 @@ COPY --from=web /src/dist /app/web
 # Single home: mount host dir -> /data/mihomo-ui
 ENV TZ=Asia/Shanghai \
     STATIC_DIR=/app/web \
-    UI_ADDR=:8080 \
+    UI_ADDR=:7080 \
     MIHOMO_API=http://127.0.0.1:9090 \
     MIHOMO_BIN=/mihomo \
     DATA_HOME=/data/mihomo-ui
 
 VOLUME ["/data/mihomo-ui"]
-EXPOSE 8080 7890 9090
+EXPOSE 7080 7890 9090
 
 ENTRYPOINT ["/usr/local/bin/mihomo-ui"]
