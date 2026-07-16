@@ -12,9 +12,10 @@
 
 ```bash
 docker run -d --name mihomo-ui \
-  --network host --pid host --cap-add NET_ADMIN \
+  --network host --cap-add NET_ADMIN \
   --device /dev/net/tun:/dev/net/tun \
   -e TZ=Asia/Shanghai \
+  -e UI_ADDR=:8080 \
   -e UI_PASSWORD=mihomo-ui \
   -e MIHOMO_SECRET=mihomo \
   -v "$PWD/data:/data/mihomo-ui" \
@@ -30,13 +31,13 @@ services:
     container_name: mihomo-ui
     restart: unless-stopped
     network_mode: host
-    pid: host
     cap_add:
       - NET_ADMIN
     devices:
       - /dev/net/tun:/dev/net/tun
     environment:
       - TZ=Asia/Shanghai
+      - UI_ADDR=:8080
       - UI_PASSWORD=mihomo-ui
       - MIHOMO_SECRET=mihomo
     volumes:
@@ -126,9 +127,9 @@ configs:
 
 | 变量 | 默认 | 说明 |
 |------|------|------|
+| `UI_ADDR` | `:8080` | 面板监听地址（host 网络下即本机端口） |
 | `UI_PASSWORD` | `mihomo-ui` | 面板登录密码 |
 | `MIHOMO_SECRET` | `mihomo` | 内核 API 密钥（装载时强制覆盖） |
-| `UI_ADDR` | `:8080` | 面板监听地址 |
 | `MIHOMO_BIN` | `/mihomo` | 内核二进制路径 |
 | `TZ` | `Asia/Shanghai` | 时区 |
 
