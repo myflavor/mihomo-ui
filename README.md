@@ -29,8 +29,10 @@ services:
     container_name: mihomo-ui
     restart: unless-stopped
     network_mode: host
-    cap_add: [NET_ADMIN]
-    devices: [/dev/net/tun:/dev/net/tun]
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
     environment:
       - TZ=Asia/Shanghai
       - UI_ADDR=:7080

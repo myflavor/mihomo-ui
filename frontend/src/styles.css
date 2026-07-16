@@ -888,7 +888,6 @@ a {
   align-items: center;
   justify-content: center;
   padding: 24px 16px;
-  animation: mask-in 0.18s ease;
 }
 
 .modal {
@@ -899,7 +898,25 @@ a {
   border-radius: 20px;
   padding: 20px 18px 18px;
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.16);
-  animation: modal-in 0.2s ease;
+}
+
+/* Transition enter / leave（开合都有动画，关闭不再硬切） */
+.modal-fade-enter-active,
+.modal-fade-leave-active {
+  transition: opacity 0.2s ease;
+}
+.modal-fade-enter-active .modal,
+.modal-fade-leave-active .modal {
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+.modal-fade-enter-from,
+.modal-fade-leave-to {
+  opacity: 0;
+}
+.modal-fade-enter-from .modal,
+.modal-fade-leave-to .modal {
+  opacity: 0;
+  transform: scale(0.96) translateY(10px);
 }
 
 /* editor modal must beat base .modal size */
@@ -912,26 +929,6 @@ a {
   flex-direction: column;
   padding: 16px 16px 14px;
   overflow: hidden;
-}
-
-@keyframes mask-in {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
-
-@keyframes modal-in {
-  from {
-    opacity: 0;
-    transform: scale(0.96) translateY(8px);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1) translateY(0);
-  }
 }
 
 .modal h3 {

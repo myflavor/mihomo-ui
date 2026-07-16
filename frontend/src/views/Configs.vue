@@ -428,104 +428,108 @@ onUnmounted(() => {
     </div>
 
     <!-- add / edit config meta -->
-    <div v-if="showForm" class="modal-mask" @click.self="showForm = false">
-      <div class="modal">
-        <h3>{{ editing ? '编辑' : '添加配置' }}</h3>
+    <Transition name="modal-fade">
+      <div v-if="showForm" class="modal-mask" @click.self="showForm = false">
+        <div class="modal">
+          <h3>{{ editing ? '编辑' : '添加配置' }}</h3>
 
-        <div class="field-block">
-          <div class="field-label">名称</div>
-          <input v-model="form.name" class="field" placeholder="请输入名称" />
-        </div>
+          <div class="field-block">
+            <div class="field-label">名称</div>
+            <input v-model="form.name" class="field" placeholder="请输入名称" />
+          </div>
 
-        <div class="field-block">
-          <div class="field-label">来源</div>
-          <div class="pill-group" style="width: 100%">
-            <button
-              class="pill"
-              style="flex: 1"
-              :class="{ active: form.source === 'url' }"
-              type="button"
-              @click="setSource('url')"
-            >
-              订阅 URL
+          <div class="field-block">
+            <div class="field-label">来源</div>
+            <div class="pill-group" style="width: 100%">
+              <button
+                class="pill"
+                style="flex: 1"
+                :class="{ active: form.source === 'url' }"
+                type="button"
+                @click="setSource('url')"
+              >
+                订阅 URL
+              </button>
+              <button
+                class="pill"
+                style="flex: 1"
+                :class="{ active: form.source === 'file' }"
+                type="button"
+                @click="setSource('file')"
+              >
+                本地文件
+              </button>
+            </div>
+          </div>
+
+          <template v-if="form.source === 'url'">
+            <div class="field-block">
+              <div class="field-label">订阅地址</div>
+              <textarea v-model="form.url" class="field" rows="3" placeholder="请输入订阅地址" />
+            </div>
+            <div class="field-block">
+              <div class="field-label">更新间隔（秒）</div>
+              <input
+                v-model="form.interval"
+                class="field"
+                type="number"
+                min="0"
+                placeholder="留空不更新"
+              />
+            </div>
+          </template>
+
+          <template v-else>
+            <div class="field-block">
+              <div class="field-label">上传文件</div>
+              <label class="file-pick">
+                <input type="file" accept=".yaml,.yml,.txt,text/yaml,text/plain" @change="onFile" />
+                <span>{{ form.fileName || (editing ? '选择新文件覆盖…' : '点击选择文件') }}</span>
+              </label>
+            </div>
+          </template>
+
+          <div class="modal-actions">
+            <button class="btn btn-ghost" @click="showForm = false">取消</button>
+            <button class="btn btn-primary" :disabled="busy" @click="submit">
+              保存
             </button>
-            <button
-              class="pill"
-              style="flex: 1"
-              :class="{ active: form.source === 'file' }"
-              type="button"
-              @click="setSource('file')"
-            >
-              本地文件
-            </button>
           </div>
-        </div>
-
-        <template v-if="form.source === 'url'">
-          <div class="field-block">
-            <div class="field-label">订阅地址</div>
-            <textarea v-model="form.url" class="field" rows="3" placeholder="请输入订阅地址" />
-          </div>
-          <div class="field-block">
-            <div class="field-label">更新间隔（秒）</div>
-            <input
-              v-model="form.interval"
-              class="field"
-              type="number"
-              min="0"
-              placeholder="留空不更新"
-            />
-          </div>
-        </template>
-
-        <template v-else>
-          <div class="field-block">
-            <div class="field-label">上传文件</div>
-            <label class="file-pick">
-              <input type="file" accept=".yaml,.yml,.txt,text/yaml,text/plain" @change="onFile" />
-              <span>{{ form.fileName || (editing ? '选择新文件覆盖…' : '点击选择文件') }}</span>
-            </label>
-          </div>
-        </template>
-
-        <div class="modal-actions">
-          <button class="btn btn-ghost" @click="showForm = false">取消</button>
-          <button class="btn btn-primary" :disabled="busy" @click="submit">
-            保存
-          </button>
         </div>
       </div>
-    </div>
+    </Transition>
 
     <!-- per-config original YAML editor -->
-    <div v-if="showConfig" class="modal-mask modal-mask-full" @click.self="showConfig = false">
-      <div class="modal modal-editor">
-        <div class="modal-editor-head">
-          <h3 class="modal-editor-title">编辑配置 · {{ cfgName }}</h3>
-          <button
-            type="button"
-            class="modal-close"
-            title="关闭"
-            aria-label="关闭"
-            @click="showConfig = false"
-          >
-            ×
-          </button>
-        </div>
-        <div v-if="cfgLoading" class="empty" style="padding: 24px">加载中…</div>
-        <textarea
-          v-else
-          v-model="cfgContent"
-          class="config-editor config-editor-full"
-          spellcheck="false"
-        />
-        <div class="modal-actions">
-          <button class="btn btn-ghost" :disabled="cfgBusy || !cfgDirty" @click="resetCfg">还原</button>
-          <button class="btn btn-primary" :disabled="cfgBusy || cfgLoading || !cfgDirty" @click="saveCfg">
-            保存
-          </button>
+    <Transition name="modal-fade">
+      <div v-if="showConfig" class="modal-mask modal-mask-full" @click.self="showConfig = false">
+        <div class="modal modal-editor">
+          <div class="modal-editor-head">
+            <h3 class="modal-editor-title">编辑配置 · {{ cfgName }}</h3>
+            <button
+              type="button"
+              class="modal-close"
+              title="关闭"
+              aria-label="关闭"
+              @click="showConfig = false"
+            >
+              ×
+            </button>
+          </div>
+          <div v-if="cfgLoading" class="empty" style="padding: 24px">加载中…</div>
+          <textarea
+            v-else
+            v-model="cfgContent"
+            class="config-editor config-editor-full"
+            spellcheck="false"
+          />
+          <div class="modal-actions">
+            <button class="btn btn-ghost" :disabled="cfgBusy || !cfgDirty" @click="resetCfg">还原</button>
+            <button class="btn btn-primary" :disabled="cfgBusy || cfgLoading || !cfgDirty" @click="saveCfg">
+              保存
+            </button>
+          </div>
         </div>
       </div>
-    </div>
+    </Transition>
   </div>
 </template>
