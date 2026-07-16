@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, onActivated, onMounted, onUnmounted, reactive, ref } from 'vue'
 import {
   activateConfig,
   addConfig,
@@ -12,6 +12,8 @@ import {
   updateConfig,
   uploadConfig,
 } from '../api'
+
+defineOptions({ name: 'Configs' })
 
 const items = ref([])
 const loading = ref(true)
@@ -63,7 +65,7 @@ async function refresh() {
     const data = await listConfigs()
     items.value = data.configs || []
   } catch (e) {
-    window.$toast?.(e.message)
+    if (!items.value.length) window.$toast?.(e.message)
   } finally {
     loading.value = false
   }
@@ -350,8 +352,11 @@ function timeText(item) {
 }
 
 onMounted(() => {
-  refresh()
   document.addEventListener('pointerdown', onGlobalPointerDown, true)
+})
+onActivated(() => {
+  if (!items.value.length) loading.value = true
+  refresh()
 })
 onUnmounted(() => {
   document.removeEventListener('pointerdown', onGlobalPointerDown, true)

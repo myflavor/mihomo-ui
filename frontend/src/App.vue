@@ -82,7 +82,8 @@ function go(path) {
 }
 
 const authReady = ref(false)
-const authed = ref(false)
+// 本地有 token 时直接进壳，避免首屏「加载中…」一闪
+const authed = ref(!!getToken())
 
 async function probeAuth() {
   try {
@@ -147,13 +148,11 @@ watch(
 
 <template>
   <div class="app-shell" :class="{ 'app-shell-login': isLogin }">
-    <div v-if="!authReady" class="page empty">加载中…</div>
-
-    <template v-else-if="isLogin || !authed">
+    <template v-if="isLogin || (!authed && authReady)">
       <router-view />
     </template>
 
-    <template v-else>
+    <template v-else-if="authed">
       <div class="desktop-nav page" style="padding-bottom: 0">
         <button
           v-for="t in tabs"
@@ -178,7 +177,11 @@ watch(
           {{ t.label }}
         </button>
       </div>
-      <router-view />
+      <router-view v-slot="{ Component }">
+        <keep-alive :include="['Home', 'Proxies', 'Configs', 'Connections', 'Logs']">
+          <component :is="Component" :key="route.name" />
+        </keep-alive>
+      </router-view>
       <nav class="bottom-nav">
         <button
           v-for="t in tabs"

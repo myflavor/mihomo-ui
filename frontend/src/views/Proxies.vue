@@ -1,6 +1,8 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onActivated, ref } from 'vue'
 import { getProxies, selectProxy, testGroupDelay } from '../api'
+
+defineOptions({ name: 'Proxies' })
 
 const loading = ref(true)
 const groups = ref([])
@@ -32,7 +34,7 @@ async function refresh() {
       activeGroup.value = list[0].name
     }
   } catch (e) {
-    window.$toast?.(e.message)
+    if (!groups.value.length) window.$toast?.(e.message)
   } finally {
     loading.value = false
   }
@@ -93,7 +95,15 @@ function typeLabel(t) {
   return map[t] || t || ''
 }
 
-onMounted(refresh)
+onActivated(() => {
+  // 已有数据时静默刷新，避免 keep-alive 回来再闪「加载中…」
+  if (groups.value.length) {
+    refresh()
+  } else {
+    loading.value = true
+    refresh()
+  }
+})
 </script>
 
 <template>

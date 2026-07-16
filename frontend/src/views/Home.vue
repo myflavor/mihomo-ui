@@ -1,8 +1,9 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onActivated, onDeactivated, onUnmounted, ref } from 'vue'
 import { authHeaders, getOverview, setMode, setTun } from '../api'
 
-const loading = ref(true)
+defineOptions({ name: 'Home' })
+
 const overview = ref(null)
 const busy = ref(false)
 const up = ref(0)
@@ -50,9 +51,7 @@ async function refresh() {
     if (data.uploadTotal != null) upTotal.value = data.uploadTotal
     if (data.downloadTotal != null) downTotal.value = data.downloadTotal
   } catch (e) {
-    window.$toast?.(e.message || '无法连接内核')
-  } finally {
-    loading.value = false
+    if (!overview.value) window.$toast?.(e.message || '无法连接内核')
   }
 }
 
@@ -134,15 +133,24 @@ function stopTraffic() {
   }
 }
 
-onMounted(() => {
+function startLive() {
   refresh()
   startTraffic()
+  if (pollTimer) clearInterval(pollTimer)
   pollTimer = setInterval(refresh, 4000)
-})
-onUnmounted(() => {
-  clearInterval(pollTimer)
+}
+
+function stopLive() {
+  if (pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
   stopTraffic()
-})
+}
+
+onActivated(startLive)
+onDeactivated(stopLive)
+onUnmounted(stopLive)
 </script>
 
 <template>
@@ -154,81 +162,78 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <div v-if="loading" class="card empty">加载中…</div>
-
-    <template v-else>
-      <div class="card traffic-card">
-        <div class="traffic-grid">
-          <div class="traffic-cell">
-            <div class="traffic-label up">↑ 上传</div>
-            <div class="traffic-rate">{{ formatRate(up) }}</div>
-            <div class="traffic-total">累计 {{ formatBytes(upTotal) }}</div>
-          </div>
-          <div class="traffic-divider" />
-          <div class="traffic-cell">
-            <div class="traffic-label down">↓ 下载</div>
-            <div class="traffic-rate">{{ formatRate(down) }}</div>
-            <div class="traffic-total">累计 {{ formatBytes(downTotal) }}</div>
-          </div>
+    <!-- 首屏直接画布局，避免「加载中…」一闪 -->
+    <div class="card traffic-card">
+      <div class="traffic-grid">
+        <div class="traffic-cell">
+          <div class="traffic-label up">↑ 上传</div>
+          <div class="traffic-rate">{{ formatRate(up) }}</div>
+          <div class="traffic-total">累计 {{ formatBytes(upTotal) }}</div>
         </div>
-        <div class="traffic-meta">
-          <span>连接 {{ connCount }}</span>
-          <span>内存 {{ memText }}</span>
+        <div class="traffic-divider" />
+        <div class="traffic-cell">
+          <div class="traffic-label down">↓ 下载</div>
+          <div class="traffic-rate">{{ formatRate(down) }}</div>
+          <div class="traffic-total">累计 {{ formatBytes(downTotal) }}</div>
         </div>
       </div>
-
-      <div class="card">
-        <div class="row">
-          <div class="label">代理模式</div>
-          <div class="pill-group">
-            <button
-              v-for="m in modes"
-              :key="m.key"
-              class="pill"
-              :class="{ active: overview?.mode === m.key }"
-              :disabled="busy"
-              @click="changeMode(m.key)"
-            >
-              {{ m.label }}
-            </button>
-          </div>
-        </div>
+      <div class="traffic-meta">
+        <span>连接 {{ connCount }}</span>
+        <span>内存 {{ memText }}</span>
       </div>
+    </div>
 
-      <div class="card">
-        <div class="row">
-          <div class="label">TUN 模式</div>
+    <div class="card">
+      <div class="row">
+        <div class="label">代理模式</div>
+        <div class="pill-group">
           <button
-            class="switch"
-            :class="{ on: tunOn }"
+            v-for="m in modes"
+            :key="m.key"
+            class="pill"
+            :class="{ active: overview?.mode === m.key }"
             :disabled="busy"
-            aria-label="toggle tun"
-            @click="toggleTun"
-          />
+            @click="changeMode(m.key)"
+          >
+            {{ m.label }}
+          </button>
         </div>
       </div>
+    </div>
 
-      <div class="card">
-        <div class="card-title">运行状态</div>
-        <div class="stat-grid">
-          <div class="stat">
-            <div class="k">当前配置</div>
-            <div class="v" style="font-size: 15px">{{ activeName }}</div>
-          </div>
-          <div class="stat">
-            <div class="k">日志级别</div>
-            <div class="v" style="font-size: 15px; text-transform: uppercase">{{ logLevel }}</div>
-          </div>
-          <div class="stat">
-            <div class="k">内核版本</div>
-            <div class="v" style="font-size: 15px">{{ kernelVer }}</div>
-          </div>
-          <div class="stat">
-            <div class="k">混合端口</div>
-            <div class="v">{{ mixedPort }}</div>
-          </div>
+    <div class="card">
+      <div class="row">
+        <div class="label">TUN 模式</div>
+        <button
+          class="switch"
+          :class="{ on: tunOn }"
+          :disabled="busy || !overview"
+          aria-label="toggle tun"
+          @click="toggleTun"
+        />
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">运行状态</div>
+      <div class="stat-grid">
+        <div class="stat">
+          <div class="k">当前配置</div>
+          <div class="v" style="font-size: 15px">{{ activeName }}</div>
+        </div>
+        <div class="stat">
+          <div class="k">日志级别</div>
+          <div class="v" style="font-size: 15px; text-transform: uppercase">{{ logLevel }}</div>
+        </div>
+        <div class="stat">
+          <div class="k">内核版本</div>
+          <div class="v" style="font-size: 15px">{{ kernelVer }}</div>
+        </div>
+        <div class="stat">
+          <div class="k">混合端口</div>
+          <div class="v">{{ mixedPort }}</div>
         </div>
       </div>
-    </template>
+    </div>
   </div>
 </template>

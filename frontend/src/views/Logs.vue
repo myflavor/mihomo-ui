@@ -1,6 +1,8 @@
 <script setup>
-import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref } from 'vue'
 import { authHeaders, getOverview, setLogLevel } from '../api'
+
+defineOptions({ name: 'Logs' })
 
 const levels = [
   { key: 'debug', label: 'Debug' },
@@ -180,10 +182,9 @@ async function loadInitialLevel() {
   }
 }
 
-onMounted(async () => {
-  await loadInitialLevel()
-  start()
-})
+onMounted(loadInitialLevel)
+onActivated(start)
+onDeactivated(stop)
 onUnmounted(stop)
 </script>
 

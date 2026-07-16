@@ -1,6 +1,8 @@
 <script setup>
-import { onMounted, onUnmounted, ref } from 'vue'
+import { onActivated, onDeactivated, onUnmounted, ref } from 'vue'
 import { closeAllConnections, closeConnection, getConnections } from '../api'
+
+defineOptions({ name: 'Connections' })
 
 const loading = ref(true)
 const busy = ref(false)
@@ -27,7 +29,7 @@ async function refresh() {
     upTotal.value = data.uploadTotal || 0
     downTotal.value = data.downloadTotal || 0
   } catch (e) {
-    window.$toast?.(e.message || '无法获取连接')
+    if (!items.value.length) window.$toast?.(e.message || '无法获取连接')
   } finally {
     loading.value = false
   }
@@ -60,11 +62,23 @@ async function closeAll() {
   }
 }
 
-onMounted(() => {
+function startLive() {
+  if (!items.value.length) loading.value = true
   refresh()
+  if (pollTimer) clearInterval(pollTimer)
   pollTimer = setInterval(refresh, 2000)
-})
-onUnmounted(() => clearInterval(pollTimer))
+}
+
+function stopLive() {
+  if (pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
+}
+
+onActivated(startLive)
+onDeactivated(stopLive)
+onUnmounted(stopLive)
 </script>
 
 <template>
