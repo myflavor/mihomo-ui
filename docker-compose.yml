@@ -1,0 +1,24 @@
+services:
+  mihomo-ui:
+    build: .
+    container_name: mihomo-ui
+    restart: unless-stopped
+    network_mode: host
+    pid: host
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      - TZ=Asia/Shanghai
+      # Panel listens on all interfaces; protect with UI_PASSWORD
+      - UI_ADDR=:8080
+      - UI_PASSWORD=${UI_PASSWORD:-}
+      - MIHOMO_API=http://127.0.0.1:9090
+      - MIHOMO_SECRET=${MIHOMO_SECRET:-change-me}
+      - MIHOMO_CONFIG=/root/.config/mihomo/config.yaml
+      - DATA_DIR=/data
+      - STATIC_DIR=/app/web
+    volumes:
+      - ./data/mihomo:/root/.config/mihomo
+      - ./data/ui:/data

@@ -1,0 +1,9 @@
+data/
+.env
+frontend/node_modules/
+frontend/dist/
+backend/mihomo-ui
+*.exe
+*.log
+*.tmp
+.DS_Store
