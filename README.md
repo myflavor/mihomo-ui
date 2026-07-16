@@ -6,20 +6,7 @@
 
 ## 快速开始
 
-### 1. 准备配置
-
-```bash
-mkdir -p data   # 会生成 mihomo/ 与 ui/ 子目录
-cat > .env <<'EOF'
-MIHOMO_SECRET=change-me-kernel
-UI_PASSWORD=change-me-panel
-EOF
-```
-
-- `MIHOMO_SECRET`：内核 API 密钥
-- `UI_PASSWORD`：面板登录密码
-
-### 2. 启动
+### 1. 启动
 
 **docker run：**
 
@@ -27,8 +14,9 @@ EOF
 docker run -d --name mihomo-ui \
   --network host --pid host --cap-add NET_ADMIN \
   --device /dev/net/tun:/dev/net/tun \
-  --env-file .env \
   -e TZ=Asia/Shanghai \
+  -e UI_PASSWORD=your-panel-password \
+  -e MIHOMO_SECRET=your-kernel-secret \
   -v "$PWD/data:/data" \
   ghcr.io/myflavor/mihomo-ui:latest
 ```
@@ -63,7 +51,7 @@ docker compose up -d
 
 > 镜像支持 `linux/amd64` + `linux/arm64`，自动匹配宿主架构。仓库 `docker-compose.yml` 为本地构建用，上面这段用于拉取预构建镜像。
 
-### 3. 访问
+### 2. 访问
 
 - **面板**：http://127.0.0.1:8080 （输入 `UI_PASSWORD` 登录）
 - **代理**：`127.0.0.1:7890`（mixed-port，HTTP/SOCKS5）
