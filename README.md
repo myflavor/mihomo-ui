@@ -17,7 +17,7 @@ docker run -d --name mihomo-ui \
   -e TZ=Asia/Shanghai \
   -e UI_PASSWORD=mihomo-ui \
   -e MIHOMO_SECRET=mihomo \
-  -v "$PWD/data:/data" \
+  -v "$PWD/data:/data/mihomo-ui" \
   ghcr.io/myflavor/mihomo-ui:latest
 ```
 
@@ -37,11 +37,10 @@ services:
       - /dev/net/tun:/dev/net/tun
     environment:
       - TZ=Asia/Shanghai
-      - UI_ADDR=:8080
       - UI_PASSWORD=mihomo-ui
       - MIHOMO_SECRET=mihomo
     volumes:
-      - ./data:/data
+      - ./data:/data/mihomo-ui
     pull_policy: always
 ```
 
@@ -49,7 +48,7 @@ services:
 docker compose up -d
 ```
 
-> 镜像支持 `linux/amd64` + `linux/arm64`，自动匹配宿主架构。仓库 `docker-compose.yml` 为本地构建用，上面这段用于拉取预构建镜像。
+> 镜像支持 `linux/amd64` + `linux/arm64`，自动匹配宿主架构。
 
 ### 2. 访问
 
@@ -83,23 +82,23 @@ docker compose up -d
 
 ---
 
-## 订阅管理说明
+## 订阅与配置
 
-- 单一**当前**订阅，切换即生效（热重载，不重启进程）
-- 添加 / 更新 / 编辑时自动构建 **prepared** 处理片段；切换只读 prepared，**不联网**，秒级切换
-- 运行时偏好（端口 / bind / secret / TUN / DNS 等）在切换时保留，不被订阅覆盖
-- 节点名保持原文，不加订阅前缀
+- 单一**当前**订阅，切换即生效（热重载）
+- 装载：`base ⊕ 订阅 ⊕ UI 开关 ⊕ secret(环境变量)`
+- 订阅尽量原样交给 mihomo（含 `proxy-providers` / `rule-providers`）
+- 面板开关（模式 / 日志级别 / TUN）切换订阅后仍保留
 
-数据目录：
+数据全部在挂载目录（容器内 `/data/mihomo-ui`，`mihomo -d` 同一目录）：
 
 | 路径 | 含义 |
 |------|------|
-| `data/mihomo/config.yaml` | 内核运行时配置 |
-| `data/mihomo/subs/<id>.yaml` | 订阅原始内容 |
-| `data/mihomo/prepared/<id>.yaml` | 处理后的订阅片段 |
-| `data/ui/subscriptions.json` | 订阅元数据 |
-
-宿主机只需挂载 **`./data` → `/data`**，容器内自动使用 `/data/mihomo` 与 `/data/ui`。
+| `base.yaml` | 本地底座（端口 / TUN 骨架 / DNS…，可手改） |
+| `config.yaml` | 内核运行配置（合并结果） |
+| `subs/<id>.yaml` | 订阅原始内容 |
+| `prepared/<id>.yaml` | 订阅快照（切换用） |
+| `subscriptions.json` | 订阅元数据 |
+| `ui-state.json` | 面板开关 |
 
 ---
 
@@ -108,13 +107,8 @@ docker compose up -d
 | 变量 | 默认 | 说明 |
 |------|------|------|
 | `UI_PASSWORD` | `mihomo-ui` | 面板登录密码 |
-| `MIHOMO_SECRET` | `mihomo` | 内核 API 密钥 |
+| `MIHOMO_SECRET` | `mihomo` | 内核 API 密钥（装载时强制覆盖） |
 | `UI_ADDR` | `:8080` | 面板监听地址 |
-| `MIHOMO_API` | `http://127.0.0.1:9090` | 内核 API 地址 |
-| `MIHOMO_HOME` | `/data/mihomo` | 内核工作目录 |
-| `MIHOMO_CONFIG` | `/data/mihomo/config.yaml` | 内核配置路径 |
-| `DATA_DIR` | `/data/ui` | UI 数据目录 |
-| `STATIC_DIR` | `/app/web` | 前端静态资源 |
 | `TZ` | `Asia/Shanghai` | 时区 |
 
 ---
@@ -124,4 +118,3 @@ docker compose up -d
 默认关闭。开启需容器具备 `NET_ADMIN` 和 `/dev/net/tun`（上方启动命令已含）。
 
 > WSL 下 TUN 与 Windows 自身 TUN 可能冲突，按需开启，不建议常开。
-

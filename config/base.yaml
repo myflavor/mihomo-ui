@@ -1,0 +1,44 @@
+mixed-port: 7890
+allow-lan: false
+bind-address: 127.0.0.1
+mode: rule
+log-level: info
+
+# Kernel control API: loopback only (safe under host network)
+external-controller: 127.0.0.1:9090
+secret: "mihomo"
+external-controller-cors:
+  allow-origins:
+    - "*"
+  allow-private-network: true
+
+profile:
+  store-selected: true
+  store-fake-ip: true
+
+# TUN off by default; enable from panel when host has NET_ADMIN + /dev/net/tun
+tun:
+  enable: false
+  stack: system
+  auto-route: true
+  auto-detect-interface: true
+  dns-hijack:
+    - any:53
+    - tcp://any:53
+
+# Minimal DNS for fake-ip / TUN; override as needed
+dns:
+  enable: true
+  ipv6: false
+  enhanced-mode: fake-ip
+  default-nameserver:
+    - 223.5.5.5
+    - 119.29.29.29
+  nameserver:
+    - tls://dns.alidns.com
+    - tls://dot.pub
+
+proxies: []
+proxy-groups: []
+rules:
+  - MATCH,DIRECT

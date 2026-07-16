@@ -20,8 +20,10 @@ type Server struct {
 	MihomoURL  string
 	Secret     string
 	Store      *store.Store
+	UIState    *configgen.UIStateStore
 	UIPassword string
 	ConfigPath string
+	BasePath   string
 	StaticDir  string
 }
 
@@ -190,10 +192,22 @@ func writeErr(w http.ResponseWriter, code int, err error) {
 	writeJSON(w, code, map[string]string{"error": err.Error()})
 }
 
+func (s *Server) installOpts() configgen.InstallOptions {
+	ui := configgen.UIState{}
+	if s.UIState != nil {
+		ui = s.UIState.Get()
+	}
+	return configgen.InstallOptions{
+		BasePath: s.BasePath,
+		Secret:   s.Secret,
+		UI:       ui,
+	}
+}
+
 // applyAndReload installs the active subscription into config.yaml and hot-reloads.
 // forceRefresh re-downloads URL raw + nested providers then rebuilds prepared.
 func (s *Server) applyAndReload(r *http.Request, forceRefresh bool) (*configgen.ApplyResult, error) {
-	res, err := configgen.ApplySubscriptionsDetailed(s.ConfigPath, s.Store.ActiveList(), forceRefresh)
+	res, err := configgen.ApplySubscriptionsDetailed(s.ConfigPath, s.Store.ActiveList(), forceRefresh, s.installOpts())
 	if err != nil {
 		return res, err
 	}
@@ -211,7 +225,7 @@ func (s *Server) buildPrepared(sub store.Subscription, forceRefresh bool) (*conf
 // installActiveAndReload installs prepared for the given sub and hot-reloads.
 // Builds prepared lazily if missing. Does not re-download unless prepared is absent.
 func (s *Server) installActiveAndReload(r *http.Request, sub store.Subscription) (*configgen.ApplyResult, error) {
-	res, err := configgen.InstallActive(s.ConfigPath, sub)
+	res, err := configgen.InstallActive(s.ConfigPath, sub, s.installOpts())
 	if err != nil {
 		return res, err
 	}
@@ -230,7 +244,7 @@ func (s *Server) rebuildPreparedAndMaybeInstall(r *http.Request, sub store.Subsc
 	if !sub.Active {
 		return res, nil
 	}
-	ir, err := configgen.InstallActive(s.ConfigPath, sub)
+	ir, err := configgen.InstallActive(s.ConfigPath, sub, s.installOpts())
 	if ir != nil {
 		if res == nil {
 			res = ir
@@ -427,6 +441,10 @@ func (s *Server) handleMode(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 502, err)
 		return
 	}
+	if s.UIState != nil {
+		_ = s.UIState.SetMode(mode)
+	}
+	_ = configgen.PatchYAMLFile(s.ConfigPath, map[string]any{"mode": mode})
 	writeJSON(w, 200, map[string]string{"mode": mode})
 }
 
@@ -454,6 +472,10 @@ func (s *Server) handleLogLevel(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 502, err)
 		return
 	}
+	if s.UIState != nil {
+		_ = s.UIState.SetLogLevel(level)
+	}
+	_ = configgen.PatchYAMLFile(s.ConfigPath, map[string]any{"log-level": level})
 	writeJSON(w, 200, map[string]string{"level": level})
 }
 
@@ -482,7 +504,10 @@ func (s *Server) handleTun(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 502, err)
 		return
 	}
-	// also persist into the real config file so reload keeps the choice
+	// persist UI preference + config file so reload / sub switch keeps the choice
+	if s.UIState != nil {
+		_ = s.UIState.SetTunEnable(*body.Enable)
+	}
 	_ = configgen.PatchYAMLFile(s.ConfigPath, map[string]any{
 		"tun": map[string]any{"enable": *body.Enable},
 	})
@@ -1193,7 +1218,7 @@ func (s *Server) handleUpdateProvider(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]string{"ok": "1"})
 }
 
-// handleConfig reads/writes the real MIHOMO_CONFIG file on disk.
+// handleConfig reads/writes the runtime config.yaml under DATA_HOME.
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:

@@ -21,23 +21,18 @@ RUN apk add --no-cache ca-certificates tzdata wget || true
 
 COPY --from=api /out/mihomo-ui /usr/local/bin/mihomo-ui
 COPY --from=web /src/dist /app/web
-COPY config/config.yaml /defaults/config.yaml
+COPY config/base.yaml /defaults/base.yaml
 COPY scripts/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh /usr/local/bin/mihomo-ui
 
-# Single data root: mount ./data -> /data
-#   /data/mihomo  kernel config / subs / prepared / providers
-#   /data/ui      panel metadata (subscriptions.json)
+# Single home: mount host dir -> /data/mihomo-ui
 ENV TZ=Asia/Shanghai \
     STATIC_DIR=/app/web \
-    DATA_DIR=/data/ui \
     UI_ADDR=:8080 \
     MIHOMO_API=http://127.0.0.1:9090 \
-    MIHOMO_HOME=/data/mihomo \
-    MIHOMO_CONFIG=/data/mihomo/config.yaml \
-    DEFAULT_CONFIG=/defaults/config.yaml
+    DATA_HOME=/data/mihomo-ui
 
-VOLUME ["/data"]
+VOLUME ["/data/mihomo-ui"]
 EXPOSE 8080 7890 9090
 
 ENTRYPOINT ["/entrypoint.sh"]
