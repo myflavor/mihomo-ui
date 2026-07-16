@@ -21,8 +21,8 @@ func env(key, def string) string {
 func main() {
 	addr := env("UI_ADDR", ":8080")
 	mihomoURL := env("MIHOMO_API", "http://127.0.0.1:9090")
-	secret := env("MIHOMO_SECRET", "")
-	uiPassword := env("UI_PASSWORD", "")
+	secret := env("MIHOMO_SECRET", "mihomo")
+	uiPassword := env("UI_PASSWORD", "mihomo-ui")
 	configPath := env("MIHOMO_CONFIG", "/data/mihomo/config.yaml")
 	dataDir := env("DATA_DIR", "/data/ui")
 	staticDir := env("STATIC_DIR", "/app/web")

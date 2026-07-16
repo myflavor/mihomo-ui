@@ -15,8 +15,8 @@ docker run -d --name mihomo-ui \
   --network host --pid host --cap-add NET_ADMIN \
   --device /dev/net/tun:/dev/net/tun \
   -e TZ=Asia/Shanghai \
-  -e UI_PASSWORD=your-panel-password \
-  -e MIHOMO_SECRET=your-kernel-secret \
+  -e UI_PASSWORD=mihomo-ui \
+  -e MIHOMO_SECRET=mihomo \
   -v "$PWD/data:/data" \
   ghcr.io/myflavor/mihomo-ui:latest
 ```
@@ -38,8 +38,8 @@ services:
     environment:
       - TZ=Asia/Shanghai
       - UI_ADDR=:8080
-      - UI_PASSWORD=your-panel-password
-      - MIHOMO_SECRET=your-kernel-secret
+      - UI_PASSWORD=mihomo-ui
+      - MIHOMO_SECRET=mihomo
     volumes:
       - ./data:/data
     pull_policy: always
@@ -53,7 +53,7 @@ docker compose up -d
 
 ### 2. 访问
 
-- **面板**：http://127.0.0.1:8080 （输入 `UI_PASSWORD` 登录）
+- **面板**：http://127.0.0.1:8080 （默认密码 `mihomo-ui`）
 - **代理**：`127.0.0.1:7890`（mixed-port，HTTP/SOCKS5）
 - **内核 API**：仅本机 `127.0.0.1:9090`
 
@@ -107,8 +107,8 @@ docker compose up -d
 
 | 变量 | 默认 | 说明 |
 |------|------|------|
-| `UI_PASSWORD` | — | 面板登录密码（必填） |
-| `MIHOMO_SECRET` | `change-me` | 内核 API 密钥 |
+| `UI_PASSWORD` | `mihomo-ui` | 面板登录密码 |
+| `MIHOMO_SECRET` | `mihomo` | 内核 API 密钥 |
 | `UI_ADDR` | `:8080` | 面板监听地址 |
 | `MIHOMO_API` | `http://127.0.0.1:9090` | 内核 API 地址 |
 | `MIHOMO_HOME` | `/data/mihomo` | 内核工作目录 |

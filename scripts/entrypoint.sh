@@ -11,7 +11,7 @@ UI_DATA_DIR="${DATA_DIR:-$DATA_ROOT/ui}"
 DEFAULT_CONFIG="${DEFAULT_CONFIG:-/defaults/config.yaml}"
 MIHOMO_BIN="${MIHOMO_BIN:-/mihomo}"
 UI_BIN="${UI_BIN:-/usr/local/bin/mihomo-ui}"
-SECRET="${MIHOMO_SECRET:-change-me}"
+SECRET="${MIHOMO_SECRET:-mihomo}"
 
 mkdir -p "$CONFIG_DIR" "$UI_DATA_DIR" \
   "$CONFIG_DIR/subs" "$CONFIG_DIR/providers" "$CONFIG_DIR/prepared"

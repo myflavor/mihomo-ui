@@ -9,7 +9,8 @@ if [[ ! -f "$ROOT/data/mihomo/config.yaml" ]]; then
 fi
 
 export MIHOMO_API="${MIHOMO_API:-http://127.0.0.1:9090}"
-export MIHOMO_SECRET="${MIHOMO_SECRET:-change-me}"
+export MIHOMO_SECRET="${MIHOMO_SECRET:-mihomo}"
+export UI_PASSWORD="${UI_PASSWORD:-mihomo-ui}"
 export MIHOMO_CONFIG="${MIHOMO_CONFIG:-$ROOT/data/mihomo/config.yaml}"
 export DATA_DIR="${DATA_DIR:-$ROOT/data/ui}"
 export UI_ADDR="${UI_ADDR:-:8080}"
