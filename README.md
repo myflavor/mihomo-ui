@@ -44,13 +44,15 @@ services:
     restart: unless-stopped
     network_mode: host
     pid: host
-    cap_add: [NET_ADMIN]
-    devices: [/dev/net/tun:/dev/net/tun]
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
     environment:
       - TZ=Asia/Shanghai
       - UI_ADDR=:8080
-      - UI_PASSWORD=${UI_PASSWORD:-}
-      - MIHOMO_SECRET=${MIHOMO_SECRET:-change-me}
+      - UI_PASSWORD=your-panel-password
+      - MIHOMO_SECRET=your-kernel-secret
     volumes:
       - ./data/mihomo:/root/.config/mihomo
       - ./data/ui:/data
