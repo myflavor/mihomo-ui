@@ -1,6 +1,6 @@
 <script setup>
 import { onMounted, ref } from 'vue'
-import { getConfig, saveConfig } from '../api'
+import { getRuntime, saveRuntime } from '../api'
 
 const loading = ref(true)
 const busy = ref(false)
@@ -13,7 +13,7 @@ const dirty = ref(false)
 async function refresh() {
   loading.value = true
   try {
-    const data = await getConfig()
+    const data = await getRuntime()
     path.value = data.path || ''
     content.value = data.content || ''
     original.value = content.value
@@ -33,7 +33,7 @@ async function save() {
   if (busy.value) return
   busy.value = true
   try {
-    const res = await saveConfig(content.value, true)
+    const res = await saveRuntime(content.value, true)
     if (res.ok === '0') {
       window.$toast?.(res.error || '已写入文件，但内核重载失败')
     } else {

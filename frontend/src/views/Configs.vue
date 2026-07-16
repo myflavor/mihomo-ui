@@ -1,16 +1,16 @@
 <script setup>
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import {
-  activateSub,
-  addSub,
-  deleteSub,
-  getSubRaw,
-  listSubs,
-  refreshSub,
-  refreshSubs,
-  saveSubRaw,
-  updateSub,
-  uploadSub,
+  activateConfig,
+  addConfig,
+  deleteConfig,
+  getConfigRaw,
+  listConfigs,
+  refreshConfig,
+  refreshConfigs,
+  saveConfigRaw,
+  updateConfig,
+  uploadConfig,
 } from '../api'
 
 const items = ref([])
@@ -32,8 +32,8 @@ const form = reactive({
 const showConfig = ref(false)
 const cfgLoading = ref(false)
 const cfgBusy = ref(false)
-const cfgSubId = ref('')
-const cfgSubName = ref('')
+const cfgId = ref('')
+const cfgName = ref('')
 const cfgActive = ref(false)
 const cfgPath = ref('')
 const cfgContent = ref('')
@@ -61,8 +61,8 @@ function applyNote(res, okMsg) {
 
 async function refresh() {
   try {
-    const data = await listSubs()
-    items.value = data.items || []
+    const data = await listConfigs()
+    items.value = data.configs || []
   } catch (e) {
     window.$toast?.(e.message)
   } finally {
@@ -116,7 +116,7 @@ async function remove(id, e) {
   if (!confirm('删除该配置？')) return
   busy.value = true
   try {
-    const res = await deleteSub(id)
+    const res = await deleteConfig(id)
     await refresh()
     applyNote(res, '已删除')
   } catch (e2) {
@@ -129,8 +129,8 @@ async function remove(id, e) {
 async function openConfig(item, e) {
   e?.stopPropagation?.()
   menuId.value = ''
-  cfgSubId.value = item.id
-  cfgSubName.value = item.name
+  cfgId.value = item.id
+  cfgName.value = item.name
   cfgActive.value = !!item.active
   showConfig.value = true
   cfgLoading.value = true
@@ -138,7 +138,7 @@ async function openConfig(item, e) {
   cfgOriginal.value = ''
   cfgPath.value = ''
   try {
-    const data = await getSubRaw(item.id)
+    const data = await getConfigRaw(item.id)
     cfgPath.value = data.path || ''
     cfgContent.value = data.content || ''
     cfgOriginal.value = cfgContent.value
@@ -199,7 +199,7 @@ async function submit() {
     if (form.source === 'file') {
       if (form.file) {
         window.$toast?.(isEdit ? '正在重新加载…' : '正在保存…')
-        res = await uploadSub({
+        res = await uploadConfig({
           id: editing.value?.id,
           name: form.name.trim(),
           url: '',
@@ -209,7 +209,7 @@ async function submit() {
         })
       } else {
         window.$toast?.('正在重新加载…')
-        res = await updateSub(editing.value.id, {
+        res = await updateConfig(editing.value.id, {
           name: form.name.trim(),
           source: 'file',
           interval: 0,
@@ -218,7 +218,7 @@ async function submit() {
     } else if (editing.value) {
       // always full refresh pipeline — remote content / providers may have changed
       window.$toast?.('正在重新加载…')
-      res = await updateSub(editing.value.id, {
+      res = await updateConfig(editing.value.id, {
         name: form.name.trim(),
         url: form.url.trim(),
         source: 'url',
@@ -226,7 +226,7 @@ async function submit() {
       })
     } else {
       window.$toast?.('正在添加…')
-      res = await addSub({
+      res = await addConfig({
         name: form.name.trim(),
         url: form.url.trim(),
         source: 'url',
@@ -252,7 +252,7 @@ async function onCardClick(item) {
   if (item.active || busy.value) return
   busy.value = true
   try {
-    const res = await activateSub(item.id)
+    const res = await activateConfig(item.id)
     await refresh()
     applyNote(res, `已切换到 ${item.name}`)
   } catch (e) {
@@ -277,7 +277,7 @@ async function doRefresh() {
   busy.value = true
   window.$toast?.('正在更新…')
   try {
-    const res = await refreshSubs()
+    const res = await refreshConfigs()
     const fails = res?.errors?.length ? `（${res.errors[0]}）` : ''
     window.$toast?.(res?.ok === false ? `更新完成但有错误${fails}` : `已更新${fails}`)
     await refresh()
@@ -298,7 +298,7 @@ async function refreshOne(item, e) {
   busy.value = true
   window.$toast?.(`正在更新 ${item.name}…`)
   try {
-    const res = await refreshSub(item.id)
+    const res = await refreshConfig(item.id)
     const fails = res?.errors?.length ? `（${res.errors[0]}）` : ''
     if (res?.ok === false || res?.error) {
       window.$toast?.(res.error || `更新失败${fails}`)
@@ -314,10 +314,10 @@ async function refreshOne(item, e) {
 }
 
 async function saveCfg() {
-  if (cfgBusy.value || !cfgDirty.value || !cfgSubId.value) return
+  if (cfgBusy.value || !cfgDirty.value || !cfgId.value) return
   cfgBusy.value = true
   try {
-    const res = await saveSubRaw(cfgSubId.value, cfgContent.value)
+    const res = await saveConfigRaw(cfgId.value, cfgContent.value)
     if (res.ok === '0') {
       window.$toast?.(res.error || '已写入原始配置，但内核重载失败')
     } else if (res.applied) {
@@ -424,7 +424,7 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- add / edit subscription meta -->
+    <!-- add / edit config meta -->
     <div v-if="showForm" class="modal-mask" @click.self="showForm = false">
       <div class="modal">
         <h3>{{ editing ? '编辑' : '添加配置' }}</h3>
@@ -494,12 +494,12 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- per-subscription original YAML editor -->
+    <!-- per-config original YAML editor -->
     <div v-if="showConfig" class="modal-mask modal-mask-full" @click.self="showConfig = false">
       <div class="modal modal-editor">
         <div class="modal-editor-head">
           <div>
-            <h3>编辑配置 · {{ cfgSubName }}</h3>
+            <h3>编辑配置 · {{ cfgName }}</h3>
             <div class="sub mono">{{ cfgPath || '…' }}</div>
             <div class="sub" style="margin-top: 4px">
               {{ cfgActive ? '当前配置：保存后会合并并热重载内核' : '非当前：仅保存原始文件' }}

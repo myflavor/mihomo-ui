@@ -12,8 +12,17 @@ import (
 
 func TestInstallActiveMergeOrder(t *testing.T) {
 	dir := t.TempDir()
-	cfg := filepath.Join(dir, "config.yaml")
-	base := filepath.Join(dir, "base.yaml")
+	mihomoDir := filepath.Join(dir, "mihomo")
+	uiDir := filepath.Join(dir, "ui")
+	configDir := filepath.Join(uiDir, "config")
+	configPath := filepath.Join(mihomoDir, "config.yaml")
+	base := filepath.Join(uiDir, "base.yaml")
+	if err := os.MkdirAll(mihomoDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(base, []byte(`
 mixed-port: 7890
 mode: rule
@@ -29,8 +38,8 @@ dns:
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	sub := store.Subscription{ID: "s1", Name: "S1", Active: true, Source: "file"}
-	subRaw := []byte(`
+	entry := store.Config{ID: "s1", Name: "S1", Active: true, Source: "file"}
+	cfgRaw := []byte(`
 proxies:
   - name: n1
     type: http
@@ -53,26 +62,23 @@ rules:
 mode: global
 secret: from-sub
 `)
-	if err := configgen.SaveLocalSub(cfg, sub.ID, subRaw); err != nil {
+	if err := configgen.SaveLocalConfig(configDir, entry.ID, cfgRaw); err != nil {
 		t.Fatal(err)
 	}
-	te := true
 	opts := configgen.InstallOptions{
-		BasePath: base,
-		Secret:   "env-secret",
+		BasePath:  base,
+		ConfigDir: configDir,
+		Secret:    "env-secret",
 		UI: configgen.UIState{
 			Mode:      "direct",
 			LogLevel:  "warning",
-			TunEnable: &te,
+			TunEnable: true,
 		},
 	}
-	if _, err := configgen.BuildPrepared(cfg, sub, false); err != nil {
+	if _, err := configgen.InstallActive(configPath, entry, opts); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := configgen.InstallActive(cfg, sub, opts); err != nil {
-		t.Fatal(err)
-	}
-	raw, err := os.ReadFile(cfg)
+	raw, err := os.ReadFile(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,10 +106,10 @@ secret: from-sub
 		t.Fatalf("tun.stack should remain from base, got %v", tun["stack"])
 	}
 	if _, ok := doc["proxy-providers"]; !ok {
-		t.Fatal("proxy-providers should pass through from sub")
+		t.Fatal("proxy-providers should pass through from config")
 	}
 	if _, ok := doc["rule-providers"]; !ok {
-		t.Fatal("rule-providers should pass through from sub")
+		t.Fatal("rule-providers should pass through from config")
 	}
 	proxies, _ := doc["proxies"].([]any)
 	if len(proxies) != 1 {

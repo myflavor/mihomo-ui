@@ -39,7 +39,7 @@ const tabs = [
     ],
   },
   {
-    to: '/subs',
+    to: '/configs',
     label: '配置',
     paths: [
       'M5 7.2h10.5',

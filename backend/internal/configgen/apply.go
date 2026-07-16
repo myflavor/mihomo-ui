@@ -16,23 +16,17 @@ import (
 
 // InstallOptions controls the final merge:
 //
-//	config.yaml = base.yml ⊕ sub ⊕ ui-state ⊕ secret(env)
+//	config.yaml = ui/base.yaml ⊕ config ⊕ settings ⊕ secret(env)
 type InstallOptions struct {
-	BasePath string   // simple local base (ports / TUN skeleton / DNS / API)
-	Secret   string   // MIHOMO_SECRET — always last
-	UI       UIState  // panel: mode / log-level / tun.enable
+	BasePath  string  // ui/base.yaml
+	ConfigDir string  // ui/config
+	Secret    string  // MIHOMO_SECRET — always last
+	UI        UIState // panel: mode / log-level / tun.enable
 }
 
 func asMap(v any) map[string]any {
 	if m, ok := v.(map[string]any); ok {
 		return m
-	}
-	return nil
-}
-
-func asSlice(v any) []any {
-	if s, ok := v.([]any); ok {
-		return s
 	}
 	return nil
 }
@@ -142,31 +136,29 @@ func downloadBytes(rawURL string) ([]byte, error) {
 	return raw, nil
 }
 
-// LocalSubPath is the on-disk original YAML for a subscription.
-// Layout: <configDir>/subs/<id>.yaml
-func LocalSubPath(basePath, id string) string {
-	return filepath.Join(filepath.Dir(basePath), "subs", id+".yaml")
+// LocalConfigPath is ui/config/<id>.yaml
+func LocalConfigPath(configDir, id string) string {
+	return filepath.Join(configDir, id+".yaml")
 }
 
-// ReadLocalSubRaw returns the original bytes of a stored subscription file.
-func ReadLocalSubRaw(basePath, id string) ([]byte, error) {
-	raw, err := os.ReadFile(LocalSubPath(basePath, id))
+// ReadLocalConfigRaw returns the original bytes of a stored config file.
+func ReadLocalConfigRaw(configDir, id string) ([]byte, error) {
+	raw, err := os.ReadFile(LocalConfigPath(configDir, id))
 	if err != nil {
 		return nil, fmt.Errorf("本地原始配置不存在: %w", err)
 	}
 	return raw, nil
 }
 
-// HasLocalSub reports whether a raw subscription file exists.
-func HasLocalSub(basePath, id string) bool {
-	_, err := os.Stat(LocalSubPath(basePath, id))
+// HasLocalConfig reports whether a raw config file exists.
+func HasLocalConfig(configDir, id string) bool {
+	_, err := os.Stat(LocalConfigPath(configDir, id))
 	return err == nil
 }
 
-// SaveLocalSub writes subscription content for a sub id as original bytes.
-func SaveLocalSub(basePath, id string, content []byte) error {
-	dir := filepath.Join(filepath.Dir(basePath), "subs")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+// SaveLocalConfig writes config content for a config id as original bytes.
+func SaveLocalConfig(configDir, id string, content []byte) error {
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		return err
 	}
 	var doc map[string]any
@@ -176,78 +168,47 @@ func SaveLocalSub(basePath, id string, content []byte) error {
 	if doc == nil {
 		return fmt.Errorf("YAML 为空")
 	}
-	return os.WriteFile(LocalSubPath(basePath, id), content, 0o644)
+	return os.WriteFile(LocalConfigPath(configDir, id), content, 0o644)
 }
 
-// DeleteLocalSub removes stored raw file and prepared file if any.
-func DeleteLocalSub(basePath, id string) {
-	_ = os.Remove(LocalSubPath(basePath, id))
-	DeletePrepared(basePath, id)
+// DeleteLocalConfig removes stored raw config file.
+func DeleteLocalConfig(configDir, id string) {
+	_ = os.Remove(LocalConfigPath(configDir, id))
 }
 
-// PreparedPath is the subscription snapshot used for fast install (near-raw).
-// Layout: <configDir>/prepared/<id>.yaml
-func PreparedPath(basePath, id string) string {
-	return filepath.Join(filepath.Dir(basePath), "prepared", id+".yaml")
-}
-
-// HasPrepared reports whether a prepared snapshot exists.
-func HasPrepared(basePath, id string) bool {
-	_, err := os.Stat(PreparedPath(basePath, id))
-	return err == nil
-}
-
-// DeletePrepared removes the prepared snapshot.
-func DeletePrepared(basePath, id string) {
-	_ = os.Remove(PreparedPath(basePath, id))
-}
-
-// LoadPrepared loads a previously built prepared snapshot.
-func LoadPrepared(basePath, id string) (map[string]any, error) {
-	return loadYAMLFile(PreparedPath(basePath, id))
-}
-
-func savePrepared(basePath, id string, doc map[string]any) error {
-	dir := filepath.Join(filepath.Dir(basePath), "prepared")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	return writeYAMLFile(PreparedPath(basePath, id), doc)
-}
-
-// FetchAndSaveSub downloads a URL subscription and stores original bytes under subs/<id>.yaml.
-func FetchAndSaveSub(basePath string, sub store.Subscription) ([]byte, error) {
-	if sub.URL == "" {
+// FetchAndSaveConfig downloads a URL config into ui/config/<id>.yaml.
+func FetchAndSaveConfig(configDir string, cfg store.Config) ([]byte, error) {
+	if cfg.URL == "" {
 		return nil, fmt.Errorf("无订阅 URL")
 	}
-	raw, err := downloadBytes(sub.URL)
+	raw, err := downloadBytes(cfg.URL)
 	if err != nil {
 		return nil, err
 	}
-	if err := SaveLocalSub(basePath, sub.ID, raw); err != nil {
+	if err := SaveLocalConfig(configDir, cfg.ID, raw); err != nil {
 		return nil, err
 	}
 	return raw, nil
 }
 
-// loadSubDoc loads the subscription document.
+// loadConfigDoc loads the config document from ui/config.
 // forceRefresh=true re-downloads URL sources into the raw file first.
-func loadSubDoc(basePath string, sub store.Subscription, forceRefresh bool) (map[string]any, error) {
+func loadConfigDoc(configDir string, cfg store.Config, forceRefresh bool) (map[string]any, error) {
 	var raw []byte
 	var err error
 
-	if forceRefresh && sub.Source != "file" && sub.URL != "" {
-		raw, err = FetchAndSaveSub(basePath, sub)
+	if forceRefresh && cfg.Source != "file" && cfg.URL != "" {
+		raw, err = FetchAndSaveConfig(configDir, cfg)
 		if err != nil {
 			return nil, err
 		}
-	} else if HasLocalSub(basePath, sub.ID) {
-		raw, err = ReadLocalSubRaw(basePath, sub.ID)
+	} else if HasLocalConfig(configDir, cfg.ID) {
+		raw, err = ReadLocalConfigRaw(configDir, cfg.ID)
 		if err != nil {
 			return nil, err
 		}
-	} else if sub.Source != "file" && sub.URL != "" {
-		raw, err = FetchAndSaveSub(basePath, sub)
+	} else if cfg.Source != "file" && cfg.URL != "" {
+		raw, err = FetchAndSaveConfig(configDir, cfg)
 		if err != nil {
 			return nil, err
 		}
@@ -257,7 +218,7 @@ func loadSubDoc(basePath string, sub store.Subscription, forceRefresh bool) (map
 
 	var doc map[string]any
 	if err := yaml.Unmarshal(raw, &doc); err != nil {
-		return nil, fmt.Errorf("parse subscription yaml: %w", err)
+		return nil, fmt.Errorf("parse config yaml: %w", err)
 	}
 	if doc == nil {
 		doc = map[string]any{}
@@ -271,43 +232,27 @@ type ApplyResult struct {
 	Warnings []string
 }
 
-// BuildPrepared stores a near-raw snapshot of the subscription for fast install.
-// forceRefresh re-downloads URL raw. Providers are left to the mihomo kernel.
-func BuildPrepared(basePath string, sub store.Subscription, forceRefresh bool) (*ApplyResult, error) {
+// EnsureConfig ensures raw config bytes exist (download if URL + force/missing).
+func EnsureConfig(configDir string, cfg store.Config, forceRefresh bool) (*ApplyResult, error) {
 	result := &ApplyResult{}
-	doc, err := loadSubDoc(basePath, sub, forceRefresh)
-	if err != nil {
-		result.Failed = append(result.Failed, fmt.Sprintf("%s: %v", sub.Name, err))
-		return result, err
-	}
-	if err := savePrepared(basePath, sub.ID, doc); err != nil {
-		result.Failed = append(result.Failed, fmt.Sprintf("%s: %v", sub.Name, err))
+	if _, err := loadConfigDoc(configDir, cfg, forceRefresh); err != nil {
+		result.Failed = append(result.Failed, fmt.Sprintf("%s: %v", cfg.Name, err))
 		return result, err
 	}
 	result.OK = 1
 	return result, nil
 }
 
-// InstallActive merges base ⊕ prepared(sub) ⊕ ui-state ⊕ secret → config.yaml.
-// Builds prepared lazily if missing. Does not re-download unless prepared is absent.
-func InstallActive(configPath string, sub store.Subscription, opts InstallOptions) (*ApplyResult, error) {
+// InstallActive merges base ⊕ config raw ⊕ settings ⊕ secret → config.yaml.
+// Does not re-download unless raw is missing (then one lazy fetch for URL configs).
+func InstallActive(configPath string, cfg store.Config, opts InstallOptions) (*ApplyResult, error) {
 	result := &ApplyResult{}
-	if !HasPrepared(configPath, sub.ID) {
-		br, err := BuildPrepared(configPath, sub, false)
-		if br != nil {
-			result.Warnings = append(result.Warnings, br.Warnings...)
-			result.Failed = append(result.Failed, br.Failed...)
-		}
-		if err != nil {
-			return result, err
-		}
-	}
-	subDoc, err := LoadPrepared(configPath, sub.ID)
+	cfgDoc, err := loadConfigDoc(opts.ConfigDir, cfg, false)
 	if err != nil {
-		result.Failed = append(result.Failed, err.Error())
+		result.Failed = append(result.Failed, fmt.Sprintf("%s: %v", cfg.Name, err))
 		return result, err
 	}
-	if err := writeMergedConfig(configPath, subDoc, opts); err != nil {
+	if err := writeMergedConfig(configPath, cfgDoc, opts); err != nil {
 		result.Failed = append(result.Failed, err.Error())
 		return result, err
 	}
@@ -315,7 +260,7 @@ func InstallActive(configPath string, sub store.Subscription, opts InstallOption
 	return result, nil
 }
 
-// InstallEmpty writes base ⊕ empty proxies ⊕ ui-state ⊕ secret (no active sub).
+// InstallEmpty writes base ⊕ empty proxies ⊕ settings ⊕ secret (no active config).
 func InstallEmpty(configPath string, opts InstallOptions) error {
 	empty := map[string]any{
 		"proxies":         []any{},
@@ -326,13 +271,12 @@ func InstallEmpty(configPath string, opts InstallOptions) error {
 	return writeMergedConfig(configPath, empty, opts)
 }
 
-func writeMergedConfig(configPath string, subDoc map[string]any, opts InstallOptions) error {
+func writeMergedConfig(configPath string, cfgDoc map[string]any, opts InstallOptions) error {
 	base := map[string]any{}
 	if opts.BasePath != "" {
 		if b, err := loadYAMLFile(opts.BasePath); err == nil {
 			base = b
 		} else if !os.IsNotExist(err) {
-			// fall back: try current config as base if base file missing on first boot
 			if cur, cerr := loadYAMLFile(configPath); cerr == nil {
 				base = cur
 			}
@@ -341,32 +285,37 @@ func writeMergedConfig(configPath string, subDoc map[string]any, opts InstallOpt
 		base = cur
 	}
 
-	root := mergeYAML(base, subDoc)
+	root := mergeYAML(base, cfgDoc)
 	opts.UI.Overlay(root)
+	// keep control API on loopback + force secret from env (not stored in base)
+	root["external-controller"] = "127.0.0.1:9090"
 	if opts.Secret != "" {
 		root["secret"] = opts.Secret
 	}
-	// keep control API on loopback if base didn't set (safety)
-	if _, ok := root["external-controller"]; !ok {
-		root["external-controller"] = "127.0.0.1:9090"
+	// ensure cors block for browser panel if missing
+	if _, ok := root["external-controller-cors"]; !ok {
+		root["external-controller-cors"] = map[string]any{
+			"allow-origins":         []any{"*"},
+			"allow-private-network": true,
+		}
 	}
 	return writeYAMLFile(configPath, root)
 }
 
-// ApplySubscriptions installs the active subscription (or empty shell).
-func ApplySubscriptions(configPath string, subs []store.Subscription, opts InstallOptions) error {
-	_, err := ApplySubscriptionsDetailed(configPath, subs, false, opts)
+// ApplyConfigs installs the active config (or empty shell).
+func ApplyConfigs(configPath string, cfgs []store.Config, opts InstallOptions) error {
+	_, err := ApplyConfigsDetailed(configPath, cfgs, false, opts)
 	return err
 }
 
-// ApplySubscriptionsDetailed installs the active subscription.
-// forceRefresh rebuilds prepared (re-download URL raw). Providers stay with the kernel.
-func ApplySubscriptionsDetailed(configPath string, subs []store.Subscription, forceRefresh bool, opts InstallOptions) (*ApplyResult, error) {
+// ApplyConfigsDetailed installs the active config.
+// forceRefresh re-downloads URL raw before install. Providers stay with the kernel.
+func ApplyConfigsDetailed(configPath string, cfgs []store.Config, forceRefresh bool, opts InstallOptions) (*ApplyResult, error) {
 	result := &ApplyResult{}
-	var active *store.Subscription
-	for i := range subs {
-		if subs[i].Active {
-			active = &subs[i]
+	var active *store.Config
+	for i := range cfgs {
+		if cfgs[i].Active {
+			active = &cfgs[i]
 			break
 		}
 	}
@@ -379,7 +328,7 @@ func ApplySubscriptionsDetailed(configPath string, subs []store.Subscription, fo
 		return result, nil
 	}
 	if forceRefresh {
-		br, err := BuildPrepared(configPath, *active, true)
+		br, err := EnsureConfig(opts.ConfigDir, *active, true)
 		if br != nil {
 			result.Warnings = append(result.Warnings, br.Warnings...)
 			result.Failed = append(result.Failed, br.Failed...)

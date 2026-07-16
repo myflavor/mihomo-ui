@@ -20,10 +20,10 @@ type Server struct {
 	MihomoURL  string
 	Secret     string
 	Store      *store.Store
-	UIState    *configgen.UIStateStore
 	UIPassword string
 	ConfigPath string
 	BasePath   string
+	ConfigDir    string
 	StaticDir  string
 }
 
@@ -37,12 +37,13 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/api/proxies/select", s.handleSelect)
 	mux.HandleFunc("/api/proxies/delay", s.handleDelay)
 	mux.HandleFunc("/api/group/delay", s.handleGroupDelay)
-	mux.HandleFunc("/api/subscriptions/apply", s.handleApply)
-	mux.HandleFunc("/api/subscriptions/refresh", s.handleRefreshSubs)
-	mux.HandleFunc("/api/subscriptions/", s.handleSubscriptionItem)
-	mux.HandleFunc("/api/subscriptions", s.handleSubscriptions)
+	mux.HandleFunc("/api/config/list", s.handleConfigList)
+	mux.HandleFunc("/api/config/apply", s.handleApply)
+	mux.HandleFunc("/api/config/refresh", s.handleRefreshConfigs)
+	mux.HandleFunc("/api/config/", s.handleConfigItem)
+	mux.HandleFunc("/api/config", s.handleConfigCreate)
 	mux.HandleFunc("/api/providers/update", s.handleUpdateProvider)
-	mux.HandleFunc("/api/config", s.handleConfig)
+	mux.HandleFunc("/api/runtime", s.handleRuntime)
 	mux.HandleFunc("/api/logs", s.handleLogs)
 	mux.HandleFunc("/api/log-level", s.handleLogLevel)
 		mux.HandleFunc("/api/traffic", s.handleTraffic)
@@ -193,21 +194,22 @@ func writeErr(w http.ResponseWriter, code int, err error) {
 }
 
 func (s *Server) installOpts() configgen.InstallOptions {
-	ui := configgen.UIState{}
-	if s.UIState != nil {
-		ui = s.UIState.Get()
+	ui := configgen.DefaultUIState()
+	if s.Store != nil {
+		ui = configgen.UIStateFromPrefs(s.Store.Prefs())
 	}
 	return configgen.InstallOptions{
 		BasePath: s.BasePath,
+		ConfigDir:  s.ConfigDir,
 		Secret:   s.Secret,
 		UI:       ui,
 	}
 }
 
-// applyAndReload installs the active subscription into config.yaml and hot-reloads.
-// forceRefresh re-downloads URL raw + nested providers then rebuilds prepared.
+// applyAndReload installs the active config into config.yaml and hot-reloads.
+// forceRefresh re-downloads URL raw then installs.
 func (s *Server) applyAndReload(r *http.Request, forceRefresh bool) (*configgen.ApplyResult, error) {
-	res, err := configgen.ApplySubscriptionsDetailed(s.ConfigPath, s.Store.ActiveList(), forceRefresh, s.installOpts())
+	res, err := configgen.ApplyConfigsDetailed(s.ConfigPath, s.Store.ActiveList(), forceRefresh, s.installOpts())
 	if err != nil {
 		return res, err
 	}
@@ -217,15 +219,14 @@ func (s *Server) applyAndReload(r *http.Request, forceRefresh bool) (*configgen.
 	return res, nil
 }
 
-// buildPrepared builds/rebuilds prepared fragment for one sub (no kernel install).
-func (s *Server) buildPrepared(sub store.Subscription, forceRefresh bool) (*configgen.ApplyResult, error) {
-	return configgen.BuildPrepared(s.ConfigPath, sub, forceRefresh)
+// ensureConfig ensures raw config bytes exist (download if needed).
+func (s *Server) ensureConfig(cfg store.Config, forceRefresh bool) (*configgen.ApplyResult, error) {
+	return configgen.EnsureConfig(s.ConfigDir, cfg, forceRefresh)
 }
 
-// installActiveAndReload installs prepared for the given sub and hot-reloads.
-// Builds prepared lazily if missing. Does not re-download unless prepared is absent.
-func (s *Server) installActiveAndReload(r *http.Request, sub store.Subscription) (*configgen.ApplyResult, error) {
-	res, err := configgen.InstallActive(s.ConfigPath, sub, s.installOpts())
+// installActiveAndReload merges base ⊕ raw cfg ⊕ settings ⊕ secret and hot-reloads.
+func (s *Server) installActiveAndReload(r *http.Request, cfg store.Config) (*configgen.ApplyResult, error) {
+	res, err := configgen.InstallActive(s.ConfigPath, cfg, s.installOpts())
 	if err != nil {
 		return res, err
 	}
@@ -235,16 +236,16 @@ func (s *Server) installActiveAndReload(r *http.Request, sub store.Subscription)
 	return res, nil
 }
 
-// rebuildPreparedAndMaybeInstall rebuilds prepared from raw; if sub is active, install+reload.
-func (s *Server) rebuildPreparedAndMaybeInstall(r *http.Request, sub store.Subscription, forceRefresh bool) (*configgen.ApplyResult, error) {
-	res, err := configgen.BuildPrepared(s.ConfigPath, sub, forceRefresh)
+// refreshConfigAndMaybeInstall ensures raw (optional re-download); if active, install+reload.
+func (s *Server) refreshConfigAndMaybeInstall(r *http.Request, cfg store.Config, forceRefresh bool) (*configgen.ApplyResult, error) {
+	res, err := configgen.EnsureConfig(s.ConfigDir, cfg, forceRefresh)
 	if err != nil {
 		return res, err
 	}
-	if !sub.Active {
+	if !cfg.Active {
 		return res, nil
 	}
-	ir, err := configgen.InstallActive(s.ConfigPath, sub, s.installOpts())
+	ir, err := configgen.InstallActive(s.ConfigPath, cfg, s.installOpts())
 	if ir != nil {
 		if res == nil {
 			res = ir
@@ -327,7 +328,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		default:
 			// prefer first non-synthetic selector-like group with a now
 			synthetic := map[string]bool{"GLOBAL": true, "COMPATIBLE": true, "DIRECT": true, "REJECT": true, "PASS": true}
-			// try active sub name as group first
+			// try active cfg name as group first
 			if active.Name != "" {
 				if raw, ok := proxies[active.Name]; ok {
 					if m, _ := raw.(map[string]any); m != nil {
@@ -407,7 +408,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		"log-level":     cfg["log-level"],
 		"ipv6":          cfg["ipv6"],
 		"config-path":   s.ConfigPath,
-		"subscriptions": len(s.Store.List()),
+		"configs": len(s.Store.List()),
 		"active":        active,
 		"connections":   connCount,
 		"uploadTotal":   upTotal,
@@ -441,8 +442,8 @@ func (s *Server) handleMode(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 502, err)
 		return
 	}
-	if s.UIState != nil {
-		_ = s.UIState.SetMode(mode)
+	if s.Store != nil {
+		_ = s.Store.SetMode(mode)
 	}
 	_ = configgen.PatchYAMLFile(s.ConfigPath, map[string]any{"mode": mode})
 	writeJSON(w, 200, map[string]string{"mode": mode})
@@ -472,8 +473,8 @@ func (s *Server) handleLogLevel(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 502, err)
 		return
 	}
-	if s.UIState != nil {
-		_ = s.UIState.SetLogLevel(level)
+	if s.Store != nil {
+		_ = s.Store.SetLogLevel(level)
 	}
 	_ = configgen.PatchYAMLFile(s.ConfigPath, map[string]any{"log-level": level})
 	writeJSON(w, 200, map[string]string{"level": level})
@@ -504,9 +505,9 @@ func (s *Server) handleTun(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 502, err)
 		return
 	}
-	// persist UI preference + config file so reload / sub switch keeps the choice
-	if s.UIState != nil {
-		_ = s.UIState.SetTunEnable(*body.Enable)
+	// persist UI preference + config file so reload / cfg switch keeps the choice
+	if s.Store != nil {
+		_ = s.Store.SetTunEnable(*body.Enable)
 	}
 	_ = configgen.PatchYAMLFile(s.ConfigPath, map[string]any{
 		"tun": map[string]any{"enable": *body.Enable},
@@ -702,96 +703,101 @@ func (s *Server) handleGroupDelay(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, out)
 }
 
-func (s *Server) handleSubscriptions(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		active, _ := s.Store.Active()
-		writeJSON(w, 200, map[string]any{
-			"items":  s.Store.List(),
-			"active": active,
-		})
-	case http.MethodPost:
-		// support JSON or multipart (file upload)
-		ct := r.Header.Get("Content-Type")
-		if strings.HasPrefix(ct, "multipart/form-data") {
-			s.handleSubUpload(w, r, "")
-			return
-		}
-		var body struct {
-			Name     string `json:"name"`
-			URL      string `json:"url"`
-			Source   string `json:"source"`
-			Interval int    `json:"interval"`
-			Content  string `json:"content"` // optional inline yaml
-			Activate *bool  `json:"activate"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			writeErr(w, 400, err)
-			return
-		}
-		source := body.Source
-		if source == "" {
-			if body.Content != "" {
-				source = "file"
-			} else {
-				source = "url"
-			}
-		}
-		sub, err := s.Store.Add(body.Name, body.URL, source, body.Interval)
-		if err != nil {
-			writeErr(w, 400, err)
-			return
-		}
-		if body.Content != "" {
-			if err := configgen.SaveLocalSub(s.ConfigPath, sub.ID, []byte(body.Content)); err != nil {
-				_ = s.Store.Delete(sub.ID)
-				writeErr(w, 400, err)
-				return
-			}
-		} else if source != "file" && body.URL != "" {
-			// eagerly cache original subscription YAML so 编辑配置 works before activate
-			if _, err := configgen.FetchAndSaveSub(s.ConfigPath, sub); err != nil {
-				_ = s.Store.Delete(sub.ID)
-				writeErr(w, 400, err)
-				return
-			}
-		}
-		// build prepared immediately so later switch is fast
-		bres, berr := s.buildPrepared(sub, false)
-		if berr != nil {
-			_ = s.Store.Delete(sub.ID)
-			configgen.DeleteLocalSub(s.ConfigPath, sub.ID)
-			writeJSON(w, 400, map[string]any{"error": berr.Error(), "detail": bres})
-			return
-		}
-		activate := true
-		if body.Activate != nil {
-			activate = *body.Activate
-		}
-		if activate {
-			if _, err := s.Store.SetActive(sub.ID); err != nil {
-				writeErr(w, 500, err)
-				return
-			}
-			sub, _ = s.Store.Get(sub.ID)
-			res, err := s.installActiveAndReload(r, sub)
-			if err != nil {
-				writeJSON(w, 201, map[string]any{
-					"item":  sub,
-					"apply": map[string]any{"ok": "0", "error": err.Error(), "detail": res},
-				})
-				return
-			}
-			writeJSON(w, 201, map[string]any{"item": sub, "apply": map[string]any{"ok": "1", "detail": res}})
-			return
-		}
-		writeJSON(w, 201, map[string]any{"item": sub, "prepared": true})
-	default:
+func (s *Server) handleConfigList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
 		writeErr(w, 405, errMethod)
+		return
 	}
+	active, _ := s.Store.Active()
+	writeJSON(w, 200, map[string]any{
+		"configs": s.Store.List(),
+		"active":  active,
+	})
 }
 
-func (s *Server) handleSubUpload(w http.ResponseWriter, r *http.Request, existingID string) {
+func (s *Server) handleConfigCreate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, 405, errMethod)
+		return
+	}
+	// support JSON or multipart (file upload)
+	ct := r.Header.Get("Content-Type")
+	if strings.HasPrefix(ct, "multipart/form-data") {
+		s.handleConfigUpload(w, r, "")
+		return
+	}
+	var body struct {
+		Name     string `json:"name"`
+		URL      string `json:"url"`
+		Source   string `json:"source"`
+		Interval int    `json:"interval"`
+		Content  string `json:"content"` // optional inline yaml
+		Activate *bool  `json:"activate"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	source := body.Source
+	if source == "" {
+		if body.Content != "" {
+			source = "file"
+		} else {
+			source = "url"
+		}
+	}
+	cfg, err := s.Store.Add(body.Name, body.URL, source, body.Interval)
+	if err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	if body.Content != "" {
+		if err := configgen.SaveLocalConfig(s.ConfigDir, cfg.ID, []byte(body.Content)); err != nil {
+			_ = s.Store.Delete(cfg.ID)
+			writeErr(w, 400, err)
+			return
+		}
+	} else if source != "file" && body.URL != "" {
+		// eagerly cache original config YAML so 编辑配置 works before activate
+		if _, err := configgen.FetchAndSaveConfig(s.ConfigDir, cfg); err != nil {
+			_ = s.Store.Delete(cfg.ID)
+			writeErr(w, 400, err)
+			return
+		}
+	}
+	// ensure raw config is on disk
+	bres, berr := s.ensureConfig(cfg, false)
+	if berr != nil {
+		_ = s.Store.Delete(cfg.ID)
+		configgen.DeleteLocalConfig(s.ConfigDir, cfg.ID)
+		writeJSON(w, 400, map[string]any{"error": berr.Error(), "detail": bres})
+		return
+	}
+	activate := true
+	if body.Activate != nil {
+		activate = *body.Activate
+	}
+	if activate {
+		if _, err := s.Store.SetActive(cfg.ID); err != nil {
+			writeErr(w, 500, err)
+			return
+		}
+		cfg, _ = s.Store.Get(cfg.ID)
+		res, err := s.installActiveAndReload(r, cfg)
+		if err != nil {
+			writeJSON(w, 201, map[string]any{
+				"config": cfg,
+				"apply":  map[string]any{"ok": "0", "error": err.Error(), "detail": res},
+			})
+			return
+		}
+		writeJSON(w, 201, map[string]any{"config": cfg, "apply": map[string]any{"ok": "1", "detail": res}})
+		return
+	}
+	writeJSON(w, 201, map[string]any{"config": cfg, "ok": true})
+}
+
+func (s *Server) handleConfigUpload(w http.ResponseWriter, r *http.Request, existingID string) {
 	if err := r.ParseMultipartForm(8 << 20); err != nil {
 		writeErr(w, 400, err)
 		return
@@ -826,59 +832,59 @@ func (s *Server) handleSubUpload(w http.ResponseWriter, r *http.Request, existin
 		return
 	}
 
-	var sub store.Subscription
+	var cfg store.Config
 	var err error
 	if existingID == "" {
-		sub, err = s.Store.Add(name, urlStr, source, interval)
+		cfg, err = s.Store.Add(name, urlStr, source, interval)
 		if err != nil {
 			writeErr(w, 400, err)
 			return
 		}
 	} else {
-		p := store.SubPatch{Name: &name, URL: &urlStr, Source: &source, Interval: &interval}
-		sub, err = s.Store.Update(existingID, p)
+		p := store.ConfigPatch{Name: &name, URL: &urlStr, Source: &source, Interval: &interval}
+		cfg, err = s.Store.Update(existingID, p)
 		if err != nil {
 			writeErr(w, 404, err)
 			return
 		}
 	}
 	if len(content) > 0 {
-		if err := configgen.SaveLocalSub(s.ConfigPath, sub.ID, content); err != nil {
+		if err := configgen.SaveLocalConfig(s.ConfigDir, cfg.ID, content); err != nil {
 			writeErr(w, 400, err)
 			return
 		}
 		// ensure source is file when content provided
 		src := "file"
-		sub, _ = s.Store.Update(sub.ID, store.SubPatch{Source: &src})
+		cfg, _ = s.Store.Update(cfg.ID, store.ConfigPatch{Source: &src})
 	} else if source != "file" && urlStr != "" {
-		if _, err := configgen.FetchAndSaveSub(s.ConfigPath, sub); err != nil {
+		if _, err := configgen.FetchAndSaveConfig(s.ConfigDir, cfg); err != nil {
 			writeErr(w, 400, err)
 			return
 		}
 	}
 
-	// build prepared so switch is fast
-	bres, berr := s.buildPrepared(sub, false)
+	// ensure raw config is on disk
+	bres, berr := s.ensureConfig(cfg, false)
 	if berr != nil {
-		writeJSON(w, 400, map[string]any{"error": berr.Error(), "detail": bres, "item": sub})
+		writeJSON(w, 400, map[string]any{"error": berr.Error(), "detail": bres, "config": cfg})
 		return
 	}
 
 	// default activate on create
 	if existingID == "" || r.FormValue("activate") == "1" || r.FormValue("activate") == "true" {
-		sub, _ = s.Store.SetActive(sub.ID)
-		res, err := s.installActiveAndReload(r, sub)
+		cfg, _ = s.Store.SetActive(cfg.ID)
+		res, err := s.installActiveAndReload(r, cfg)
 		if err != nil {
 			writeJSON(w, 200, map[string]any{
-				"item":  sub,
+				"config":  cfg,
 				"apply": map[string]any{"ok": "0", "error": err.Error(), "detail": res},
 			})
 			return
 		}
-		writeJSON(w, 200, map[string]any{"item": sub, "apply": map[string]any{"ok": "1", "detail": res}})
+		writeJSON(w, 200, map[string]any{"config": cfg, "apply": map[string]any{"ok": "1", "detail": res}})
 		return
 	}
-	writeJSON(w, 200, map[string]any{"item": sub, "prepared": true})
+	writeJSON(w, 200, map[string]any{"config": cfg, "ok": true})
 }
 
 func fmtSscanf(v string, n *int) (int, error) {
@@ -900,15 +906,15 @@ func fmtSscanf(v string, n *int) (int, error) {
 	return 1, nil
 }
 
-func (s *Server) handleSubscriptionItem(w http.ResponseWriter, r *http.Request) {
-	rest := strings.TrimPrefix(r.URL.Path, "/api/subscriptions/")
+func (s *Server) handleConfigItem(w http.ResponseWriter, r *http.Request) {
+	rest := strings.TrimPrefix(r.URL.Path, "/api/config/")
 	rest = strings.Trim(rest, "/")
 	if rest == "" || rest == "apply" || rest == "refresh" {
 		http.NotFound(w, r)
 		return
 	}
-	// /api/subscriptions/{id}/activate
-	// /api/subscriptions/{id}/upload
+	// /api/config/{id}/activate
+	// /api/config/{id}/upload
 	parts := strings.Split(rest, "/")
 	id := parts[0]
 	action := ""
@@ -917,39 +923,39 @@ func (s *Server) handleSubscriptionItem(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if action == "activate" && r.Method == http.MethodPost {
-		// install prepared only — no re-download / re-process when prepared exists
-		sub, err := s.Store.SetActive(id)
+		// install from local raw — no re-download on switch
+		cfg, err := s.Store.SetActive(id)
 		if err != nil {
 			writeErr(w, 404, err)
 			return
 		}
-		res, err := s.installActiveAndReload(r, sub)
+		res, err := s.installActiveAndReload(r, cfg)
 		if err != nil {
 			writeJSON(w, 200, map[string]any{
-				"item":  sub,
-				"apply": map[string]any{"ok": "0", "error": err.Error(), "detail": res},
+				"config": cfg,
+				"apply":  map[string]any{"ok": "0", "error": err.Error(), "detail": res},
 			})
 			return
 		}
-		writeJSON(w, 200, map[string]any{"item": sub, "apply": map[string]any{"ok": "1", "detail": res}})
+		writeJSON(w, 200, map[string]any{"config": cfg, "apply": map[string]any{"ok": "1", "detail": res}})
 		return
 	}
 
-	// /api/subscriptions/{id}/refresh — rebuild raw+prepared for this URL sub
+	// /api/config/{id}/refresh — re-download raw for this URL config
 	if action == "refresh" && r.Method == http.MethodPost {
-		sub, err := s.Store.Get(id)
+		cfg, err := s.Store.Get(id)
 		if err != nil {
 			writeErr(w, 404, err)
 			return
 		}
-		if sub.Source == "file" || sub.URL == "" {
+		if cfg.Source == "file" || cfg.URL == "" {
 			writeJSON(w, 400, map[string]string{"error": "本地文件无需更新"})
 			return
 		}
-		res, err := s.rebuildPreparedAndMaybeInstall(r, sub, true)
+		res, err := s.refreshConfigAndMaybeInstall(r, cfg, true)
 		if err != nil {
 			writeJSON(w, 200, map[string]any{
-				"item":  sub,
+				"config":  cfg,
 				"ok":    false,
 				"error": err.Error(),
 				"detail": res,
@@ -957,8 +963,8 @@ func (s *Server) handleSubscriptionItem(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		// touch updatedAt
-		sub, _ = s.Store.Update(id, store.SubPatch{})
-		if sub.Active {
+		cfg, _ = s.Store.Update(id, store.ConfigPatch{})
+		if cfg.Active {
 			// also refresh mihomo providers for active install
 			out, perr := s.Mihomo.Providers(r.Context())
 			var errs []string
@@ -978,24 +984,24 @@ func (s *Server) handleSubscriptionItem(w http.ResponseWriter, r *http.Request) 
 				errs = append(errs, res.Failed...)
 			}
 			writeJSON(w, 200, map[string]any{
-				"item":   sub,
+				"config":   cfg,
 				"ok":     len(errs) == 0,
 				"detail": res,
 				"errors": errs,
 			})
 			return
 		}
-		writeJSON(w, 200, map[string]any{"item": sub, "ok": true, "detail": res})
+		writeJSON(w, 200, map[string]any{"config": cfg, "ok": true, "detail": res})
 		return
 	}
 
 	if action == "upload" && r.Method == http.MethodPost {
-		s.handleSubUpload(w, r, id)
+		s.handleConfigUpload(w, r, id)
 		return
 	}
 
 	if action == "raw" {
-		s.handleSubRaw(w, r, id)
+		s.handleConfigRaw(w, r, id)
 		return
 	}
 
@@ -1010,7 +1016,7 @@ func (s *Server) handleSubscriptionItem(w http.ResponseWriter, r *http.Request) 
 			writeErr(w, 404, err)
 			return
 		}
-		configgen.DeleteLocalSub(s.ConfigPath, id)
+		configgen.DeleteLocalConfig(s.ConfigDir, id)
 		// re-apply new active (if any)
 		res, err := s.applyAndReload(r, false)
 		if err != nil {
@@ -1018,10 +1024,10 @@ func (s *Server) handleSubscriptionItem(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		writeJSON(w, 200, map[string]any{"ok": "1", "apply": map[string]any{"ok": "1", "detail": res}})
-	case http.MethodPatch, http.MethodPut:
+	case http.MethodPut:
 		ct := r.Header.Get("Content-Type")
 		if strings.HasPrefix(ct, "multipart/form-data") {
-			s.handleSubUpload(w, r, id)
+			s.handleConfigUpload(w, r, id)
 			return
 		}
 		var body struct {
@@ -1036,7 +1042,7 @@ func (s *Server) handleSubscriptionItem(w http.ResponseWriter, r *http.Request) 
 			writeErr(w, 400, err)
 			return
 		}
-		sub, err := s.Store.Update(id, store.SubPatch{
+		cfg, err := s.Store.Update(id, store.ConfigPatch{
 			Name: body.Name, URL: body.URL, Source: body.Source, Interval: body.Interval,
 		})
 		if err != nil {
@@ -1044,55 +1050,55 @@ func (s *Server) handleSubscriptionItem(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		if body.Content != nil {
-			if err := configgen.SaveLocalSub(s.ConfigPath, id, []byte(*body.Content)); err != nil {
+			if err := configgen.SaveLocalConfig(s.ConfigDir, id, []byte(*body.Content)); err != nil {
 				writeErr(w, 400, err)
 				return
 			}
-			// do NOT force source=file — editing raw of a URL sub keeps source=url
+			// do NOT force source=file — editing raw of a URL cfg keeps source=url
 		}
 		// re-apply only if this is the active one, or activate requested
 		if body.Activate != nil && *body.Activate {
-			sub, _ = s.Store.SetActive(id)
+			cfg, _ = s.Store.SetActive(id)
 		}
 
 		// Always re-run the full pipeline on edit:
-		// - URL sub: re-download raw + nested providers + rebuild prepared
-		// - file/raw content: rebuild prepared from saved bytes
+		// - URL cfg: re-download raw
+		// - file/raw content: reinstall from saved bytes
 		// - if active: install + hot reload
 		// Don't try to guess whether remote content changed.
-		forceRefresh := sub.Source != "file" && sub.URL != "" && body.Content == nil
-		res, err := s.rebuildPreparedAndMaybeInstall(r, sub, forceRefresh)
+		forceRefresh := cfg.Source != "file" && cfg.URL != "" && body.Content == nil
+		res, err := s.refreshConfigAndMaybeInstall(r, cfg, forceRefresh)
 		if err != nil {
-			writeJSON(w, 200, map[string]any{"item": sub, "apply": map[string]any{"ok": "0", "error": err.Error(), "detail": res}})
+			writeJSON(w, 200, map[string]any{"config": cfg, "apply": map[string]any{"ok": "0", "error": err.Error(), "detail": res}})
 			return
 		}
-		writeJSON(w, 200, map[string]any{"item": sub, "apply": map[string]any{"ok": "1", "detail": res}})
+		writeJSON(w, 200, map[string]any{"config": cfg, "apply": map[string]any{"ok": "1", "detail": res}})
 	default:
 		writeErr(w, 405, errMethod)
 	}
 }
 
-func (s *Server) handleSubRaw(w http.ResponseWriter, r *http.Request, id string) {
-	sub, err := s.Store.Get(id)
+func (s *Server) handleConfigRaw(w http.ResponseWriter, r *http.Request, id string) {
+	cfg, err := s.Store.Get(id)
 	if err != nil {
 		writeErr(w, 404, err)
 		return
 	}
-	path := configgen.LocalSubPath(s.ConfigPath, id)
+	path := configgen.LocalConfigPath(s.ConfigDir, id)
 	switch r.Method {
 	case http.MethodGet:
-		raw, err := configgen.ReadLocalSubRaw(s.ConfigPath, id)
+		raw, err := configgen.ReadLocalConfigRaw(s.ConfigDir, id)
 		if err != nil {
 			writeJSON(w, 404, map[string]string{"error": "尚未缓存原始配置，请先更新或重新添加", "path": path})
 			return
 		}
 		writeJSON(w, 200, map[string]any{
-			"id":      sub.ID,
-			"name":    sub.Name,
-			"source":  sub.Source,
+			"id":      cfg.ID,
+			"name":    cfg.Name,
+			"source":  cfg.Source,
 			"path":    path,
 			"content": string(raw),
-			"active":  sub.Active,
+			"active":  cfg.Active,
 		})
 	case http.MethodPut, http.MethodPost:
 		var body struct {
@@ -1111,23 +1117,23 @@ func (s *Server) handleSubRaw(w http.ResponseWriter, r *http.Request, id string)
 			writeJSON(w, 400, map[string]string{"error": "content required"})
 			return
 		}
-		if err := configgen.SaveLocalSub(s.ConfigPath, id, []byte(body.Content)); err != nil {
+		if err := configgen.SaveLocalConfig(s.ConfigDir, id, []byte(body.Content)); err != nil {
 			writeErr(w, 400, err)
 			return
 		}
-		// always rebuild prepared from edited raw; install only when active
-		res, err := s.rebuildPreparedAndMaybeInstall(r, sub, false)
+		// always reinstall from edited raw when active
+		res, err := s.refreshConfigAndMaybeInstall(r, cfg, false)
 		if err != nil {
 			writeJSON(w, 200, map[string]any{
 				"ok":      "0",
 				"path":    path,
 				"error":   err.Error(),
 				"detail":  res,
-				"applied": sub.Active,
+				"applied": cfg.Active,
 			})
 			return
 		}
-		writeJSON(w, 200, map[string]any{"ok": "1", "path": path, "applied": sub.Active, "detail": res})
+		writeJSON(w, 200, map[string]any{"ok": "1", "path": path, "applied": cfg.Active, "detail": res})
 	default:
 		writeErr(w, 405, errMethod)
 	}
@@ -1146,12 +1152,12 @@ func (s *Server) handleApply(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"ok": "1", "config-path": s.ConfigPath, "detail": res})
 }
 
-func (s *Server) handleRefreshSubs(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleRefreshConfigs(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeErr(w, 405, errMethod)
 		return
 	}
-	// forceRefresh: re-download active URL subscription into raw file, then apply
+	// forceRefresh: re-download active URL config into raw file, then apply
 	res, err := s.applyAndReload(r, true)
 	if err != nil {
 		writeErr(w, 502, err)
@@ -1218,8 +1224,8 @@ func (s *Server) handleUpdateProvider(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]string{"ok": "1"})
 }
 
-// handleConfig reads/writes the runtime config.yaml under DATA_HOME.
-func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
+// handleRuntime reads/writes the kernel mihomo/config.yaml.
+func (s *Server) handleRuntime(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		raw, err := os.ReadFile(s.ConfigPath)

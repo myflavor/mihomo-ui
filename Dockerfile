@@ -14,25 +14,23 @@ RUN go mod download
 COPY backend/ .
 RUN CGO_ENABLED=0 go build -o /out/mihomo-ui ./cmd/server
 
-# final: official mihomo + UI
+# final: official mihomo + UI (single process: mihomo-ui starts mihomo)
 FROM metacubex/mihomo:latest
 
-RUN apk add --no-cache ca-certificates tzdata wget || true
+RUN apk add --no-cache ca-certificates tzdata || true
 
 COPY --from=api /out/mihomo-ui /usr/local/bin/mihomo-ui
 COPY --from=web /src/dist /app/web
-COPY config/base.yaml /defaults/base.yaml
-COPY scripts/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh /usr/local/bin/mihomo-ui
 
 # Single home: mount host dir -> /data/mihomo-ui
 ENV TZ=Asia/Shanghai \
     STATIC_DIR=/app/web \
     UI_ADDR=:8080 \
     MIHOMO_API=http://127.0.0.1:9090 \
+    MIHOMO_BIN=/mihomo \
     DATA_HOME=/data/mihomo-ui
 
 VOLUME ["/data/mihomo-ui"]
 EXPOSE 8080 7890 9090
 
-ENTRYPOINT ["/entrypoint.sh"]
+ENTRYPOINT ["/usr/local/bin/mihomo-ui"]

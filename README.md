@@ -69,7 +69,7 @@ docker compose up -d
 **节点** — 切换策略组、选节点、测速。规则模式显示订阅策略组；全局模式显示 GLOBAL 及其可选项。
 
 **配置** — 管理订阅。点击卡片切换当前；卡片右上 **⋯** 菜单：
-- **更新**：重新下载该订阅并重建（仅 URL 类型）
+- **更新**：重新下载该订阅（仅 URL 类型）
 - **编辑**：改名称 / 地址 / 更新间隔
 - **配置**：编辑该订阅的原始 YAML
 - **删除**
@@ -89,16 +89,36 @@ docker compose up -d
 - 订阅尽量原样交给 mihomo（含 `proxy-providers` / `rule-providers`）
 - 面板开关（模式 / 日志级别 / TUN）切换订阅后仍保留
 
-数据全部在挂载目录（容器内 `/data/mihomo-ui`，`mihomo -d` 同一目录）：
+数据目录（挂载 `./data` → `/data/mihomo-ui`）：
 
-| 路径 | 含义 |
-|------|------|
-| `base.yaml` | 本地底座（端口 / TUN 骨架 / DNS…，可手改） |
-| `config.yaml` | 内核运行配置（合并结果） |
-| `subs/<id>.yaml` | 订阅原始内容 |
-| `prepared/<id>.yaml` | 订阅快照（切换用） |
-| `subscriptions.json` | 订阅元数据 |
-| `ui-state.json` | 面板开关 |
+```text
+data/
+  mihomo/                 # mihomo -d 工作目录
+    config.yaml           # 内核运行配置（合并结果）
+  ui/
+    base.yaml             # UI 合并底座（首次由 UI 从内置模板生成）
+    settings.yaml         # 面板开关 + 配置列表（UI 启动时生成）
+    config/<id>.yaml      # 配置原始内容
+```
+
+`base.yaml` 模板内嵌在 UI 二进制中（`//go:embed`）；仅当文件不存在时写出，已有用户修改不会被覆盖。
+
+`settings.yaml` 示例：
+
+```yaml
+mode: rule
+log-level: info
+tun-enable: false
+configId: <uuid>
+configs:
+  - id: <uuid>
+    name: Xin
+    url: https://...
+    source: url
+    interval: 0
+    updatedAt: "2026-07-16 16:17:28"
+    createdAt: "2026-07-16 16:13:17"
+```
 
 ---
 
@@ -109,6 +129,7 @@ docker compose up -d
 | `UI_PASSWORD` | `mihomo-ui` | 面板登录密码 |
 | `MIHOMO_SECRET` | `mihomo` | 内核 API 密钥（装载时强制覆盖） |
 | `UI_ADDR` | `:8080` | 面板监听地址 |
+| `MIHOMO_BIN` | `/mihomo` | 内核二进制路径 |
 | `TZ` | `Asia/Shanghai` | 时区 |
 
 ---

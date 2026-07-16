@@ -1,10 +1,14 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
+	"time"
 
 	"github.com/xin/mihomo-ui/internal/api"
 	"github.com/xin/mihomo-ui/internal/configgen"
@@ -20,24 +24,47 @@ func env(key, def string) string {
 }
 
 func main() {
-	// Single data home for kernel + panel.
+	// DATA_HOME/
+	//   mihomo/          kernel home (mihomo -d)
+	//   ui/
+	//     base.yaml      merge base (seeded from embed)
+	//     settings.yaml  panel switches + configs list
+	//     config/        config raw YAML
 	dataHome := env("DATA_HOME", "/data/mihomo-ui")
+	mihomoDir := filepath.Join(dataHome, "mihomo")
+	uiDir := filepath.Join(dataHome, "ui")
 	addr := env("UI_ADDR", ":8080")
 	mihomoURL := env("MIHOMO_API", "http://127.0.0.1:9090")
 	secret := env("MIHOMO_SECRET", "mihomo")
 	uiPassword := env("UI_PASSWORD", "mihomo-ui")
-	configPath := filepath.Join(dataHome, "config.yaml")
-	basePath := filepath.Join(dataHome, "base.yaml")
+	mihomoBin := env("MIHOMO_BIN", "/mihomo")
+	configPath := filepath.Join(mihomoDir, "config.yaml")
+	basePath := filepath.Join(uiDir, "base.yaml")
+	configDir := filepath.Join(uiDir, "config")
 	staticDir := env("STATIC_DIR", "/app/web")
 
-	if err := os.MkdirAll(dataHome, 0o755); err != nil {
+	for _, d := range []string{mihomoDir, uiDir, configDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			log.Fatal(err)
+		}
+	}
+
+	// Seed ui/base.yaml once from embedded template (never overwrite user edits).
+	if err := configgen.EnsureBase(basePath); err != nil {
 		log.Fatal(err)
 	}
-	subStore, err := store.New(filepath.Join(dataHome, "subscriptions.json"))
-	if err != nil {
+
+	// Minimal kernel config so mihomo can boot; install pipeline rewrites fully later.
+	if err := mihomo.EnsureMinimalConfig(configPath, secret); err != nil {
 		log.Fatal(err)
 	}
-	uiState, err := configgen.NewUIStateStore(filepath.Join(dataHome, "ui-state.json"))
+
+	def := configgen.DefaultUIStateFromBase(basePath)
+	cfgStore, err := store.New(filepath.Join(uiDir, "settings.yaml"), store.UIPrefs{
+		Mode:      def.Mode,
+		LogLevel:  def.LogLevel,
+		TunEnable: def.TunEnable,
+	})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -48,20 +75,58 @@ func main() {
 		log.Printf("UI password auth enabled")
 	}
 
+	client := mihomo.NewClient(mihomoURL, secret)
+
+	// Start mihomo kernel as child process.
+	kernel := &mihomo.Kernel{Bin: mihomoBin, Home: mihomoDir}
+	if err := kernel.Start(); err != nil {
+		log.Fatal(err)
+	}
+	if err := kernel.WaitReady(client, 15*time.Second); err != nil {
+		kernel.Stop()
+		log.Fatal(err)
+	}
+
 	srv := &api.Server{
-		Mihomo:     mihomo.NewClient(mihomoURL, secret),
+		Mihomo:     client,
 		MihomoURL:  mihomoURL,
 		Secret:     secret,
 		UIPassword: uiPassword,
-		Store:      subStore,
-		UIState:    uiState,
+		Store:      cfgStore,
 		ConfigPath: configPath,
 		BasePath:   basePath,
+		ConfigDir:  configDir,
 		StaticDir:  staticDir,
 	}
 
-	log.Printf("mihomo-ui listening on %s (data=%s api=%s)", addr, dataHome, mihomoURL)
-	if err := http.ListenAndServe(addr, srv.Routes()); err != nil {
-		log.Fatal(err)
-	}
+	httpSrv := &http.Server{Addr: addr, Handler: srv.Routes()}
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		log.Printf("mihomo-ui listening on %s (data=%s api=%s bin=%s)", addr, dataHome, mihomoURL, mihomoBin)
+		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Printf("http server error: %v", err)
+			sigCh <- syscall.SIGTERM
+		}
+	}()
+
+	// If mihomo dies, tear down the whole process.
+	go func() {
+		err := <-kernel.Done()
+		if err != nil {
+			log.Printf("mihomo exited: %v; shutting down", err)
+		} else {
+			log.Printf("mihomo exited; shutting down")
+		}
+		sigCh <- syscall.SIGTERM
+	}()
+
+	<-sigCh
+	log.Printf("shutting down...")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	_ = httpSrv.Shutdown(ctx)
+	cancel()
+	kernel.Stop()
 }

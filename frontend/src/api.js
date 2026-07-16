@@ -66,19 +66,19 @@ export const testDelay = (name) => api(`/api/proxies/delay?name=${encodeURICompo
 export const testGroupDelay = (group) =>
   api(`/api/group/delay?group=${encodeURIComponent(group)}`)
 
-export const listSubs = () => api('/api/subscriptions')
-export const addSub = (body) => api('/api/subscriptions', { method: 'POST', body })
-export const updateSub = (id, body) =>
-  api(`/api/subscriptions/${id}`, { method: 'PATCH', body })
-export const deleteSub = (id) => api(`/api/subscriptions/${id}`, { method: 'DELETE' })
-export const activateSub = (id) =>
-  api(`/api/subscriptions/${id}/activate`, { method: 'POST' })
-export const refreshSub = (id) =>
-  api(`/api/subscriptions/${id}/refresh`, { method: 'POST' })
-export const refreshSubs = () => api('/api/subscriptions/refresh', { method: 'POST' })
-export const applySubs = () => api('/api/subscriptions/apply', { method: 'POST' })
+export const listConfigs = () => api('/api/config/list')
+export const addConfig = (body) => api('/api/config', { method: 'POST', body })
+export const updateConfig = (id, body) =>
+  api(`/api/config/${id}`, { method: 'PUT', body })
+export const deleteConfig = (id) => api(`/api/config/${id}`, { method: 'DELETE' })
+export const activateConfig = (id) =>
+  api(`/api/config/${id}/activate`, { method: 'POST' })
+export const refreshConfig = (id) =>
+  api(`/api/config/${id}/refresh`, { method: 'POST' })
+export const refreshConfigs = () => api('/api/config/refresh', { method: 'POST' })
+export const applyConfigs = () => api('/api/config/apply', { method: 'POST' })
 
-export async function uploadSub({ id, name, url, interval, file, content, activate }) {
+export async function uploadConfig({ id, name, url, interval, file, content, activate }) {
   const fd = new FormData()
   if (name != null) fd.append('name', name)
   if (url != null) fd.append('url', url)
@@ -88,17 +88,17 @@ export async function uploadSub({ id, name, url, interval, file, content, activa
   if (activate) fd.append('activate', '1')
   if (file || content) fd.append('source', 'file')
   else if (url) fd.append('source', 'url')
-  const path = id ? `/api/subscriptions/${id}/upload` : '/api/subscriptions'
+  const path = id ? `/api/config/${id}/upload` : '/api/config'
   return api(path, { method: 'POST', body: fd })
 }
 
-export const getSubRaw = (id) => api(`/api/subscriptions/${id}/raw`)
-export const saveSubRaw = (id, content) =>
-  api(`/api/subscriptions/${id}/raw`, { method: 'PUT', body: { content } })
+export const getConfigRaw = (id) => api(`/api/config/${id}/raw`)
+export const saveConfigRaw = (id, content) =>
+  api(`/api/config/${id}/raw`, { method: 'PUT', body: { content } })
 
-export const getConfig = () => api('/api/config')
-export const saveConfig = (content, reload = true) =>
-  api('/api/config', { method: 'PUT', body: { content, reload } })
+export const getRuntime = () => api('/api/runtime')
+export const saveRuntime = (content, reload = true) =>
+  api('/api/runtime', { method: 'PUT', body: { content, reload } })
 
 export const getConnections = () => api('/api/connections')
 export const closeAllConnections = () => api('/api/connections', { method: 'DELETE' })
