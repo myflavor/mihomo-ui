@@ -16,21 +16,6 @@ SECRET="${MIHOMO_SECRET:-change-me}"
 mkdir -p "$CONFIG_DIR" "$UI_DATA_DIR" \
   "$CONFIG_DIR/subs" "$CONFIG_DIR/providers" "$CONFIG_DIR/prepared"
 
-# One-time migrate from legacy mounts if present:
-#   /root/.config/mihomo  (old kernel home)
-legacy_kernel="/root/.config/mihomo"
-if [ ! -f "$CONFIG_FILE" ] && [ -f "$legacy_kernel/config.yaml" ]; then
-  echo "[entrypoint] migrating legacy kernel data from $legacy_kernel -> $CONFIG_DIR"
-  cp -a "$legacy_kernel/." "$CONFIG_DIR/" 2>/dev/null || true
-fi
-# old UI store lived at /data/subscriptions.json when DATA_DIR was /data
-if [ ! -f "$UI_DATA_DIR/subscriptions.json" ] && [ -f "$DATA_ROOT/subscriptions.json" ]; then
-  echo "[entrypoint] migrating legacy UI store $DATA_ROOT/subscriptions.json -> $UI_DATA_DIR/"
-  mkdir -p "$UI_DATA_DIR"
-  mv "$DATA_ROOT/subscriptions.json" "$UI_DATA_DIR/subscriptions.json" 2>/dev/null || \
-    cp "$DATA_ROOT/subscriptions.json" "$UI_DATA_DIR/subscriptions.json"
-fi
-
 if [ ! -f "$CONFIG_FILE" ]; then
   if [ -f "$DEFAULT_CONFIG" ]; then
     cp "$DEFAULT_CONFIG" "$CONFIG_FILE"
