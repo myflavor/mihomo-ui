@@ -54,11 +54,6 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// Minimal kernel config so mihomo can boot; install pipeline rewrites fully later.
-	if err := mihomo.EnsureMinimalConfig(configPath, secret); err != nil {
-		log.Fatal(err)
-	}
-
 	def := configgen.DefaultUIStateFromBase(basePath)
 	cfgStore, err := store.New(filepath.Join(uiDir, "settings.yaml"), store.UIPrefs{
 		Mode:      def.Mode,
@@ -67,6 +62,22 @@ func main() {
 	})
 	if err != nil {
 		log.Fatal(err)
+	}
+
+	// Every boot: base ⊕ active config ⊕ settings ⊕ secret → mihomo/config.yaml
+	// (forces secret / external-controller; no stale leftover keys from old runs).
+	installOpts := configgen.InstallOptions{
+		BasePath:  basePath,
+		ConfigDir: configDir,
+		Secret:    secret,
+		UI:        configgen.UIStateFromPrefs(cfgStore.Prefs()),
+	}
+	if err := configgen.ApplyConfigs(configPath, cfgStore.ActiveList(), installOpts); err != nil {
+		log.Printf("install active config failed (will still try to start mihomo): %v", err)
+		// Fall back to minimal bootable shell so kernel can start.
+		if err2 := configgen.InstallEmpty(configPath, installOpts); err2 != nil {
+			log.Fatal(err2)
+		}
 	}
 
 	if uiPassword == "" {

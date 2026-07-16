@@ -6,7 +6,6 @@ import (
 	"log"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -103,95 +102,4 @@ func (k *Kernel) Stop() {
 		}
 		log.Printf("mihomo stopped")
 	})
-}
-
-// EnsureMinimalConfig writes a bootable config.yaml if missing.
-// Full merge is done later by the UI install pipeline.
-func EnsureMinimalConfig(configPath, secret string) error {
-	if _, err := os.Stat(configPath); err == nil {
-		return patchBootKeys(configPath, secret)
-	} else if !os.IsNotExist(err) {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
-		return err
-	}
-	if secret == "" {
-		secret = "mihomo"
-	}
-	body := fmt.Sprintf(`mixed-port: 7890
-allow-lan: false
-bind-address: 127.0.0.1
-mode: rule
-log-level: info
-external-controller: 127.0.0.1:9090
-secret: %q
-proxies: []
-proxy-groups: []
-rules:
-  - MATCH,DIRECT
-`, secret)
-	tmp := configPath + ".tmp"
-	if err := os.WriteFile(tmp, []byte(body), 0o644); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, configPath); err != nil {
-		return err
-	}
-	log.Printf("seeded minimal %s", configPath)
-	return nil
-}
-
-// patchBootKeys ensures secret / external-controller stay present on restart.
-func patchBootKeys(configPath, secret string) error {
-	raw, err := os.ReadFile(configPath)
-	if err != nil {
-		return err
-	}
-	text := string(raw)
-	changed := false
-	if secret != "" && !containsKey(text, "secret") {
-		text += fmt.Sprintf("\nsecret: %q\n", secret)
-		changed = true
-	}
-	if !containsKey(text, "external-controller") {
-		text += "\nexternal-controller: 127.0.0.1:9090\n"
-		changed = true
-	}
-	if !changed {
-		return nil
-	}
-	return os.WriteFile(configPath, []byte(text), 0o644)
-}
-
-func containsKey(yamlText, key string) bool {
-	for _, line := range splitLines(yamlText) {
-		if len(line) == 0 || line[0] == '#' {
-			continue
-		}
-		i := 0
-		for i < len(line) && (line[i] == ' ' || line[i] == '\t') {
-			i++
-		}
-		rest := line[i:]
-		if len(rest) >= len(key)+1 && rest[:len(key)] == key && rest[len(key)] == ':' {
-			return true
-		}
-	}
-	return false
-}
-
-func splitLines(s string) []string {
-	var out []string
-	start := 0
-	for i := 0; i < len(s); i++ {
-		if s[i] == '\n' {
-			out = append(out, s[start:i])
-			start = i + 1
-		}
-	}
-	if start <= len(s) {
-		out = append(out, s[start:])
-	}
-	return out
 }
