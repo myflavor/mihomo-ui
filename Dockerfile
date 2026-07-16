@@ -25,16 +25,19 @@ COPY config/config.yaml /defaults/config.yaml
 COPY scripts/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh /usr/local/bin/mihomo-ui
 
+# Single data root: mount ./data -> /data
+#   /data/mihomo  kernel config / subs / prepared / providers
+#   /data/ui      panel metadata (subscriptions.json)
 ENV TZ=Asia/Shanghai \
     STATIC_DIR=/app/web \
-    DATA_DIR=/data \
+    DATA_DIR=/data/ui \
     UI_ADDR=:8080 \
     MIHOMO_API=http://127.0.0.1:9090 \
-    MIHOMO_CONFIG=/root/.config/mihomo/config.yaml \
-    MIHOMO_HOME=/root/.config/mihomo \
+    MIHOMO_HOME=/data/mihomo \
+    MIHOMO_CONFIG=/data/mihomo/config.yaml \
     DEFAULT_CONFIG=/defaults/config.yaml
 
-VOLUME ["/root/.config/mihomo", "/data"]
+VOLUME ["/data"]
 EXPOSE 8080 7890 9090
 
 ENTRYPOINT ["/entrypoint.sh"]

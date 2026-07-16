@@ -9,7 +9,7 @@
 ### 1. 准备配置
 
 ```bash
-mkdir -p data/mihomo data/ui
+mkdir -p data   # 会生成 mihomo/ 与 ui/ 子目录
 cat > .env <<'EOF'
 MIHOMO_SECRET=change-me-kernel
 UI_PASSWORD=change-me-panel
@@ -29,8 +29,7 @@ docker run -d --name mihomo-ui \
   --device /dev/net/tun:/dev/net/tun \
   --env-file .env \
   -e TZ=Asia/Shanghai \
-  -v "$PWD/data/mihomo:/root/.config/mihomo" \
-  -v "$PWD/data/ui:/data" \
+  -v "$PWD/data:/data" \
   ghcr.io/myflavor/mihomo-ui:latest
 ```
 
@@ -54,8 +53,7 @@ services:
       - UI_PASSWORD=your-panel-password
       - MIHOMO_SECRET=your-kernel-secret
     volumes:
-      - ./data/mihomo:/root/.config/mihomo
-      - ./data/ui:/data
+      - ./data:/data
     pull_policy: always
 ```
 
@@ -113,6 +111,8 @@ docker compose up -d
 | `data/mihomo/prepared/<id>.yaml` | 处理后的订阅片段 |
 | `data/ui/subscriptions.json` | 订阅元数据 |
 
+宿主机只需挂载 **`./data` → `/data`**，容器内自动使用 `/data/mihomo` 与 `/data/ui`。
+
 ---
 
 ## 环境变量
@@ -123,8 +123,9 @@ docker compose up -d
 | `MIHOMO_SECRET` | `change-me` | 内核 API 密钥 |
 | `UI_ADDR` | `:8080` | 面板监听地址 |
 | `MIHOMO_API` | `http://127.0.0.1:9090` | 内核 API 地址 |
-| `MIHOMO_CONFIG` | `/root/.config/mihomo/config.yaml` | 内核配置路径 |
-| `DATA_DIR` | `/data` | UI 数据目录 |
+| `MIHOMO_HOME` | `/data/mihomo` | 内核工作目录 |
+| `MIHOMO_CONFIG` | `/data/mihomo/config.yaml` | 内核配置路径 |
+| `DATA_DIR` | `/data/ui` | UI 数据目录 |
 | `STATIC_DIR` | `/app/web` | 前端静态资源 |
 | `TZ` | `Asia/Shanghai` | 时区 |
 

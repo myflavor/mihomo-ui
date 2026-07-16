@@ -1,15 +1,35 @@
 #!/bin/sh
 set -eu
 
-CONFIG_DIR="${MIHOMO_HOME:-/root/.config/mihomo}"
+# Unified layout under /data (host mounts ./data -> /data):
+#   /data/mihomo  kernel home (config.yaml, subs/, prepared/, providers/)
+#   /data/ui      panel store (subscriptions.json)
+DATA_ROOT="${DATA_ROOT:-/data}"
+CONFIG_DIR="${MIHOMO_HOME:-$DATA_ROOT/mihomo}"
 CONFIG_FILE="${MIHOMO_CONFIG:-$CONFIG_DIR/config.yaml}"
+UI_DATA_DIR="${DATA_DIR:-$DATA_ROOT/ui}"
 DEFAULT_CONFIG="${DEFAULT_CONFIG:-/defaults/config.yaml}"
 MIHOMO_BIN="${MIHOMO_BIN:-/mihomo}"
 UI_BIN="${UI_BIN:-/usr/local/bin/mihomo-ui}"
 SECRET="${MIHOMO_SECRET:-change-me}"
 
-mkdir -p "$CONFIG_DIR" "$(dirname "${DATA_DIR:-/data}")" "${DATA_DIR:-/data}" \
-  "$CONFIG_DIR/subs" "$CONFIG_DIR/providers"
+mkdir -p "$CONFIG_DIR" "$UI_DATA_DIR" \
+  "$CONFIG_DIR/subs" "$CONFIG_DIR/providers" "$CONFIG_DIR/prepared"
+
+# One-time migrate from legacy mounts if present:
+#   /root/.config/mihomo  (old kernel home)
+legacy_kernel="/root/.config/mihomo"
+if [ ! -f "$CONFIG_FILE" ] && [ -f "$legacy_kernel/config.yaml" ]; then
+  echo "[entrypoint] migrating legacy kernel data from $legacy_kernel -> $CONFIG_DIR"
+  cp -a "$legacy_kernel/." "$CONFIG_DIR/" 2>/dev/null || true
+fi
+# old UI store lived at /data/subscriptions.json when DATA_DIR was /data
+if [ ! -f "$UI_DATA_DIR/subscriptions.json" ] && [ -f "$DATA_ROOT/subscriptions.json" ]; then
+  echo "[entrypoint] migrating legacy UI store $DATA_ROOT/subscriptions.json -> $UI_DATA_DIR/"
+  mkdir -p "$UI_DATA_DIR"
+  mv "$DATA_ROOT/subscriptions.json" "$UI_DATA_DIR/subscriptions.json" 2>/dev/null || \
+    cp "$DATA_ROOT/subscriptions.json" "$UI_DATA_DIR/subscriptions.json"
+fi
 
 if [ ! -f "$CONFIG_FILE" ]; then
   if [ -f "$DEFAULT_CONFIG" ]; then
@@ -22,11 +42,10 @@ if [ ! -f "$CONFIG_FILE" ]; then
 fi
 
 # Harden / sync secret + bind addresses for local-only control plane.
-# Uses a tiny portable awk/sed approach so we don't depend on yq.
 sync_config() {
   # secret
   if grep -qE '^[[:space:]]*secret:' "$CONFIG_FILE"; then
-    sed -i -E "s|^([[:space:]]*secret:).*|\\1 \"$SECRET\"|" "$CONFIG_FILE"
+    sed -i -E "s|^([[:space:]]*secret:).*|\1 \"$SECRET\"|" "$CONFIG_FILE"
   else
     printf '\nsecret: "%s"\n' "$SECRET" >>"$CONFIG_FILE"
   fi
@@ -79,7 +98,6 @@ while [ "$i" -lt 30 ]; do
     || busybox wget -qO- --header="Authorization: Bearer $SECRET" "http://127.0.0.1:9090/version" >/dev/null 2>&1; then
     break
   fi
-  # fallback: process still alive
   if ! kill -0 "$MIHOMO_PID" 2>/dev/null; then
     echo "[entrypoint] mihomo exited early" >&2
     wait "$MIHOMO_PID" || true
@@ -92,15 +110,14 @@ done
 export MIHOMO_API="${MIHOMO_API:-http://127.0.0.1:9090}"
 export MIHOMO_SECRET="$SECRET"
 export MIHOMO_CONFIG="$CONFIG_FILE"
+export MIHOMO_HOME="$CONFIG_DIR"
 export UI_ADDR="${UI_ADDR:-:8080}"
-export DATA_DIR="${DATA_DIR:-/data}"
+export DATA_DIR="$UI_DATA_DIR"
 export STATIC_DIR="${STATIC_DIR:-/app/web}"
 
+echo "[entrypoint] data: kernel=$CONFIG_DIR ui=$UI_DATA_DIR"
 echo "[entrypoint] starting ui on $UI_ADDR..."
-# UI is PID1 effectively after exec — disable EXIT kill trap before exec
 trap - INT TERM EXIT
-# re-install simple forward of signals via shell is lost on exec; use a wrapper:
-# Keep shell as PID1 so we can stop both.
 "$UI_BIN" &
 UI_PID=$!
 
@@ -113,7 +130,6 @@ term() {
 }
 trap term INT TERM
 
-# if either dies, stop the other
 while kill -0 "$MIHOMO_PID" 2>/dev/null && kill -0 "$UI_PID" 2>/dev/null; do
   sleep 2
 done

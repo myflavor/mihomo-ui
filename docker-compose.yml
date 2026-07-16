@@ -16,9 +16,11 @@ services:
       - UI_PASSWORD=${UI_PASSWORD:-}
       - MIHOMO_API=http://127.0.0.1:9090
       - MIHOMO_SECRET=${MIHOMO_SECRET:-change-me}
-      - MIHOMO_CONFIG=/root/.config/mihomo/config.yaml
-      - DATA_DIR=/data
+      # paths default inside image; override only if needed
+      - MIHOMO_HOME=/data/mihomo
+      - MIHOMO_CONFIG=/data/mihomo/config.yaml
+      - DATA_DIR=/data/ui
       - STATIC_DIR=/app/web
     volumes:
-      - ./data/mihomo:/root/.config/mihomo
-      - ./data/ui:/data
+      # single host mount: ./data/{mihomo,ui}
+      - ./data:/data
