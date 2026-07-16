@@ -26,7 +26,6 @@ export async function api(path, options = {}) {
   if (token && !opts.headers.Authorization) {
     opts.headers.Authorization = `Bearer ${token}`
   }
-  // don't force JSON content-type for FormData
   if (opts.body && typeof opts.body === 'object' && !(opts.body instanceof FormData)) {
     opts.headers['Content-Type'] = opts.headers['Content-Type'] || 'application/json'
     opts.body = JSON.stringify(opts.body)
@@ -44,12 +43,10 @@ export async function api(path, options = {}) {
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('ui-auth-required'))
     }
-    const msg = data?.error || '需要登录'
-    throw new Error(msg)
+    throw new Error(data?.error || '需要登录')
   }
   if (!res.ok) {
-    const msg = data?.error || res.statusText || 'request failed'
-    throw new Error(msg)
+    throw new Error(data?.error || res.statusText || 'request failed')
   }
   return data
 }
@@ -75,6 +72,8 @@ export const updateSub = (id, body) =>
 export const deleteSub = (id) => api(`/api/subscriptions/${id}`, { method: 'DELETE' })
 export const activateSub = (id) =>
   api(`/api/subscriptions/${id}/activate`, { method: 'POST' })
+export const refreshSub = (id) =>
+  api(`/api/subscriptions/${id}/refresh`, { method: 'POST' })
 export const refreshSubs = () => api('/api/subscriptions/refresh', { method: 'POST' })
 export const applySubs = () => api('/api/subscriptions/apply', { method: 'POST' })
 
@@ -92,17 +91,19 @@ export async function uploadSub({ id, name, url, interval, file, content, activa
   return api(path, { method: 'POST', body: fd })
 }
 
-// Per-subscription original YAML (not the merged kernel config)
 export const getSubRaw = (id) => api(`/api/subscriptions/${id}/raw`)
 export const saveSubRaw = (id, content) =>
   api(`/api/subscriptions/${id}/raw`, { method: 'PUT', body: { content } })
 
-// Advanced: merged kernel config (debug)
 export const getConfig = () => api('/api/config')
 export const saveConfig = (content, reload = true) =>
   api('/api/config', { method: 'PUT', body: { content, reload } })
 
-/** Auth headers for raw fetch (logs stream) */
+export const getConnections = () => api('/api/connections')
+export const closeAllConnections = () => api('/api/connections', { method: 'DELETE' })
+export const closeConnection = (id) =>
+  api(`/api/connections?id=${encodeURIComponent(id)}`, { method: 'DELETE' })
+
 export function authHeaders(extra = {}) {
   const h = { ...extra }
   const token = getToken()

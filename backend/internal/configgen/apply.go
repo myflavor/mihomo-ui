@@ -160,9 +160,59 @@ func SaveLocalSub(basePath, id string, content []byte) error {
 	return os.WriteFile(LocalSubPath(basePath, id), content, 0o644)
 }
 
-// DeleteLocalSub removes stored raw file if any.
+// DeleteLocalSub removes stored raw file and prepared file if any.
 func DeleteLocalSub(basePath, id string) {
 	_ = os.Remove(LocalSubPath(basePath, id))
+	DeletePrepared(basePath, id)
+}
+
+// PreparedPath is the processed subscription fragment for fast install.
+// Layout: <configDir>/prepared/<id>.yaml
+func PreparedPath(basePath, id string) string {
+	return filepath.Join(filepath.Dir(basePath), "prepared", id+".yaml")
+}
+
+// HasPrepared reports whether a prepared fragment exists.
+func HasPrepared(basePath, id string) bool {
+	_, err := os.Stat(PreparedPath(basePath, id))
+	return err == nil
+}
+
+// DeletePrepared removes the prepared fragment.
+func DeletePrepared(basePath, id string) {
+	_ = os.Remove(PreparedPath(basePath, id))
+}
+
+// LoadPrepared loads a previously built prepared fragment.
+func LoadPrepared(basePath, id string) (map[string]any, error) {
+	raw, err := os.ReadFile(PreparedPath(basePath, id))
+	if err != nil {
+		return nil, fmt.Errorf("处理后的配置不存在: %w", err)
+	}
+	var doc map[string]any
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		return nil, fmt.Errorf("parse prepared yaml: %w", err)
+	}
+	if doc == nil {
+		doc = map[string]any{}
+	}
+	return doc, nil
+}
+
+func savePrepared(basePath, id string, fragment map[string]any) error {
+	dir := filepath.Join(filepath.Dir(basePath), "prepared")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	out, err := yaml.Marshal(fragment)
+	if err != nil {
+		return err
+	}
+	tmp := PreparedPath(basePath, id) + ".tmp"
+	if err := os.WriteFile(tmp, out, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, PreparedPath(basePath, id))
 }
 
 // FetchAndSaveSub downloads a URL subscription and stores original bytes under subs/<id>.yaml.
@@ -216,58 +266,198 @@ func loadSubDoc(basePath string, sub store.Subscription, forceRefresh bool) (map
 	return doc, nil
 }
 
-// ApplySubscriptions downloads/loads each enabled subscription, merges proxies /
-// providers / groups / rules / hosts into the base config path, and preserves
-// local TUN / DNS / API settings. The file written is the one mihomo loads
-// (MIHOMO_CONFIG → usually data/mihomo/config.yaml).
-//
-// Returns a non-nil error only when every enabled subscription fails (or base
-// config cannot be read/written). Partial failures are recorded via ApplyResult.
-func ApplySubscriptions(basePath string, subs []store.Subscription) error {
-	_, err := ApplySubscriptionsDetailed(basePath, subs, false)
-	return err
-}
-
 type ApplyResult struct {
 	OK       int
 	Failed   []string
 	Warnings []string
 }
 
-func ApplySubscriptionsDetailed(basePath string, subs []store.Subscription, forceRefresh bool) (*ApplyResult, error) {
+// BuildPrepared processes raw subscription into prepared/<id>.yaml.
+// forceRefresh re-downloads URL raw and nested providers.
+func BuildPrepared(basePath string, sub store.Subscription, forceRefresh bool) (*ApplyResult, error) {
+	result := &ApplyResult{}
+	doc, err := loadSubDoc(basePath, sub, forceRefresh)
+	if err != nil {
+		result.Failed = append(result.Failed, fmt.Sprintf("%s: %v", sub.Name, err))
+		return result, err
+	}
+	fragment, warnings, err := processSubDoc(basePath, sub, doc, forceRefresh)
+	if err != nil {
+		result.Failed = append(result.Failed, fmt.Sprintf("%s: %v", sub.Name, err))
+		return result, err
+	}
+	result.Warnings = append(result.Warnings, warnings...)
+	if err := savePrepared(basePath, sub.ID, fragment); err != nil {
+		result.Failed = append(result.Failed, fmt.Sprintf("%s: %v", sub.Name, err))
+		return result, err
+	}
+	result.OK = 1
+	return result, nil
+}
+
+// InstallActive merges preserveKeys from current config.yaml with prepared fragment
+// and writes config.yaml. Builds prepared lazily if missing.
+func InstallActive(basePath string, sub store.Subscription) (*ApplyResult, error) {
+	result := &ApplyResult{}
+	if !HasPrepared(basePath, sub.ID) {
+		br, err := BuildPrepared(basePath, sub, false)
+		if br != nil {
+			result.Warnings = append(result.Warnings, br.Warnings...)
+			result.Failed = append(result.Failed, br.Failed...)
+		}
+		if err != nil {
+			return result, err
+		}
+	}
+	fragment, err := LoadPrepared(basePath, sub.ID)
+	if err != nil {
+		result.Failed = append(result.Failed, err.Error())
+		return result, err
+	}
+
 	raw, err := os.ReadFile(basePath)
 	if err != nil {
-		return nil, err
+		return result, err
 	}
 	var base map[string]any
 	if err := yaml.Unmarshal(raw, &base); err != nil {
-		return nil, err
+		return result, err
 	}
 	if base == nil {
 		base = map[string]any{}
 	}
-
-	// Snapshot preserved runtime fields from current base.
-	preserved := map[string]any{}
+	root := map[string]any{}
 	for _, k := range preserveKeys {
 		if v, ok := base[k]; ok {
-			preserved[k] = v
+			root[k] = v
 		}
 	}
-
-	root := map[string]any{}
-	for k, v := range preserved {
+	// overlay prepared subscription fields (never overwrite preserveKeys)
+	for k, v := range fragment {
+		skip := false
+		for _, pk := range preserveKeys {
+			if k == pk {
+				skip = true
+				break
+			}
+		}
+		if skip {
+			continue
+		}
 		root[k] = v
 	}
 
-	// Start empty merge targets.
+	out, err := yaml.Marshal(root)
+	if err != nil {
+		return result, err
+	}
+	tmp := basePath + ".tmp"
+	if err := os.WriteFile(tmp, out, 0o644); err != nil {
+		return result, err
+	}
+	if err := os.Rename(tmp, basePath); err != nil {
+		return result, err
+	}
+	result.OK = 1
+	return result, nil
+}
+
+// InstallEmpty writes a minimal kernel config keeping preserveKeys only.
+func InstallEmpty(basePath string) error {
+	raw, err := os.ReadFile(basePath)
+	if err != nil {
+		return err
+	}
+	var base map[string]any
+	if err := yaml.Unmarshal(raw, &base); err != nil {
+		return err
+	}
+	if base == nil {
+		base = map[string]any{}
+	}
+	root := map[string]any{}
+	for _, k := range preserveKeys {
+		if v, ok := base[k]; ok {
+			root[k] = v
+		}
+	}
+	root["proxies"] = []any{}
+	root["proxy-providers"] = map[string]any{}
+	root["proxy-groups"] = []any{
+		map[string]any{"name": "GLOBAL", "type": "select", "proxies": []string{"DIRECT"}},
+	}
+	root["rules"] = []any{
+		"GEOIP,private,DIRECT,no-resolve",
+		"GEOIP,CN,DIRECT",
+		"MATCH,DIRECT",
+	}
+	out, err := yaml.Marshal(root)
+	if err != nil {
+		return err
+	}
+	tmp := basePath + ".tmp"
+	if err := os.WriteFile(tmp, out, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, basePath)
+}
+
+// ApplySubscriptions downloads/loads each enabled subscription into prepared form
+// then installs the active one into the kernel config path.
+func ApplySubscriptions(basePath string, subs []store.Subscription) error {
+	_, err := ApplySubscriptionsDetailed(basePath, subs, false)
+	return err
+}
+
+// ApplySubscriptionsDetailed installs the active subscription.
+// forceRefresh rebuilds prepared (re-download URL raw + nested providers).
+func ApplySubscriptionsDetailed(basePath string, subs []store.Subscription, forceRefresh bool) (*ApplyResult, error) {
+	result := &ApplyResult{}
+	var active *store.Subscription
+	for i := range subs {
+		if subs[i].Active || subs[i].Enabled {
+			active = &subs[i]
+			break
+		}
+	}
+	if active == nil {
+		if err := InstallEmpty(basePath); err != nil {
+			return result, err
+		}
+		return result, nil
+	}
+	if forceRefresh || !HasPrepared(basePath, active.ID) {
+		br, err := BuildPrepared(basePath, *active, forceRefresh)
+		if br != nil {
+			result.OK = br.OK
+			result.Failed = append(result.Failed, br.Failed...)
+			result.Warnings = append(result.Warnings, br.Warnings...)
+		}
+		if err != nil {
+			return result, err
+		}
+	}
+	ir, err := InstallActive(basePath, *active)
+	if ir != nil {
+		if result.OK == 0 {
+			result.OK = ir.OK
+		}
+		result.Failed = append(result.Failed, ir.Failed...)
+		result.Warnings = append(result.Warnings, ir.Warnings...)
+	}
+	return result, err
+}
+
+// processSubDoc converts one subscription document into a prepared fragment
+// (proxies / proxy-providers / proxy-groups / rules / hosts) without preserveKeys.
+func processSubDoc(basePath string, sub store.Subscription, doc map[string]any, forceRefresh bool) (map[string]any, []string, error) {
+	var warnings []string
 	proxies := []any{}
 	providers := map[string]any{}
 	groups := []any{}
 	hosts := map[string]any{}
 	var rules []any
 
-	// Track taken names so multi-sub merges stay unique.
 	takenProxy := map[string]bool{"DIRECT": true, "REJECT": true, "PASS": true, "COMPATIBLE": true}
 	takenGroup := map[string]bool{}
 	takenProv := map[string]bool{}
@@ -276,36 +466,112 @@ func ApplySubscriptionsDetailed(basePath string, subs []store.Subscription, forc
 	provRoot := filepath.Join(cfgDir, "providers")
 	_ = os.MkdirAll(provRoot, 0o755)
 
-	// Built-in top groups always present.
 	var subTopGroups []string
+	subKey := ProviderName(sub.Name)
+	prefix := ""
 
-	result := &ApplyResult{}
-	enabledCount := 0
-	for _, sub := range subs {
-		// only active subscription is applied (store.ActiveList filters)
-		if !sub.Active && !sub.Enabled {
+	proxyRename := map[string]string{}
+	groupRename := map[string]string{}
+	provRename := map[string]string{}
+
+	// proxies
+	for _, p := range asSlice(doc["proxies"]) {
+		m := asMap(p)
+		if m == nil {
 			continue
 		}
-		enabledCount++
-
-		doc, err := loadSubDoc(basePath, sub, forceRefresh)
-		if err != nil {
-			result.Failed = append(result.Failed, fmt.Sprintf("%s: %v", sub.Name, err))
+		old := str(m["name"])
+		if old == "" {
 			continue
 		}
-		result.OK++
-		subKey := ProviderName(sub.Name)
-		prefix := fmt.Sprintf("[%s] ", sub.Name)
+		newName := uniqueName(old, takenProxy)
+		takenProxy[newName] = true
+		proxyRename[old] = newName
+		nm := cloneMap(m)
+		nm["name"] = newName
+		proxies = append(proxies, nm)
+	}
 
-		// --- rename maps for this subscription ---
-		proxyRename := map[string]string{} // old -> new
-		groupRename := map[string]string{}
-		provRename := map[string]string{}
-		var subProxyNames []string // all leaf proxies produced by this sub
+	// proxy-providers
+	if pm := asMap(doc["proxy-providers"]); pm != nil {
+		for oldKey, rawP := range pm {
+			m := asMap(rawP)
+			if m == nil {
+				continue
+			}
+			newKey := uniqueName(subKey+"_"+ProviderName(oldKey), takenProv)
+			takenProv[newKey] = true
+			provRename[oldKey] = newKey
+			nm := cloneMap(m)
+			cachePath := filepath.Join(provRoot, newKey+".yaml")
+			nm["path"] = filepath.ToSlash(filepath.Join("providers", newKey+".yaml"))
+			if asMap(nm["health-check"]) == nil {
+				nm["health-check"] = map[string]any{
+					"enable":   true,
+					"url":      "https://www.gstatic.com/generate_204",
+					"interval": 300,
+				}
+			}
+			ov := asMap(nm["override"])
+			if ov == nil {
+				ov = map[string]any{}
+			}
+			delete(ov, "additional-prefix")
+			if len(ov) == 0 {
+				delete(nm, "override")
+			} else {
+				nm["override"] = ov
+			}
 
-		// proxies
-		for _, p := range asSlice(doc["proxies"]) {
-			m := asMap(p)
+			provURL := str(nm["url"])
+			if provURL != "" {
+				if names, err := materializeProvider(provURL, cachePath, prefix, forceRefresh, &proxies, takenProxy, proxyRename); err != nil {
+					warnings = append(warnings, fmt.Sprintf("provider %s/%s: %v", sub.Name, oldKey, err))
+					providers[newKey] = nm
+				} else if len(names) > 0 {
+					providers[newKey] = nm
+					provRename[oldKey+".__names__"] = strings.Join(names, "\x1e")
+				} else {
+					providers[newKey] = nm
+				}
+			} else {
+				providers[newKey] = nm
+			}
+		}
+	}
+
+	rawGroups := asSlice(doc["proxy-groups"])
+	if len(rawGroups) == 0 {
+		gName := uniqueName(sub.Name, takenGroup)
+		takenGroup[gName] = true
+		groupRename[sub.Name] = gName
+		g := map[string]any{
+			"name":    gName,
+			"type":    "select",
+			"proxies": []string{"DIRECT"},
+		}
+		var list []string
+		for _, newName := range proxyRename {
+			list = append(list, newName)
+		}
+		if len(list) > 0 {
+			g["proxies"] = append([]string{"DIRECT"}, list...)
+		}
+		var use []string
+		for k, nk := range provRename {
+			if strings.HasSuffix(k, ".__names__") {
+				continue
+			}
+			use = append(use, nk)
+		}
+		if len(use) > 0 {
+			g["use"] = use
+		}
+		groups = append(groups, g)
+		subTopGroups = append(subTopGroups, gName)
+	} else {
+		for _, g := range rawGroups {
+			m := asMap(g)
 			if m == nil {
 				continue
 			}
@@ -313,231 +579,110 @@ func ApplySubscriptionsDetailed(basePath string, subs []store.Subscription, forc
 			if old == "" {
 				continue
 			}
-			newName := uniqueName(prefix+old, takenProxy)
-			takenProxy[newName] = true
-			proxyRename[old] = newName
-			nm := cloneMap(m)
-			nm["name"] = newName
-			proxies = append(proxies, nm)
-			subProxyNames = append(subProxyNames, newName)
+			newName := old
+			if takenGroup[newName] || takenProxy[newName] {
+				newName = uniqueName(old, takenGroup)
+			} else {
+				takenGroup[newName] = true
+			}
+			groupRename[old] = newName
 		}
-
-		// proxy-providers — download now so groups aren't empty (COMPATIBLE)
-		if pm := asMap(doc["proxy-providers"]); pm != nil {
-			for oldKey, rawP := range pm {
-				m := asMap(rawP)
-				if m == nil {
-					continue
-				}
-				newKey := uniqueName(subKey+"_"+ProviderName(oldKey), takenProv)
-				takenProv[newKey] = true
-				provRename[oldKey] = newKey
-				nm := cloneMap(m)
-				cachePath := filepath.Join(provRoot, newKey+".yaml")
-				nm["path"] = filepath.ToSlash(filepath.Join("providers", newKey+".yaml"))
-				if asMap(nm["health-check"]) == nil {
-					nm["health-check"] = map[string]any{
-						"enable":   true,
-						"url":      "https://www.gstatic.com/generate_204",
-						"interval": 300,
-					}
-				}
-				ov := asMap(nm["override"])
-				if ov == nil {
-					ov = map[string]any{}
-				}
-				if _, ok := ov["additional-prefix"]; !ok {
-					ov["additional-prefix"] = prefix
-				}
-				nm["override"] = ov
-
-				// Prefer materializing HTTP providers into local files + inline
-				// proxies when possible, so empty "COMPATIBLE" groups never appear.
-				provURL := str(nm["url"])
-				if provURL != "" {
-					if names, err := materializeProvider(provURL, cachePath, prefix, &proxies, takenProxy, proxyRename); err != nil {
-						result.Warnings = append(result.Warnings, fmt.Sprintf("provider %s/%s: %v", sub.Name, oldKey, err))
-						// keep as http provider for later mihomo refresh
-						providers[newKey] = nm
-					} else if len(names) > 0 {
-						providers[newKey] = nm
-						provRename[oldKey+".__names__"] = strings.Join(names, "\x1e")
-						subProxyNames = append(subProxyNames, names...)
-					} else {
-						providers[newKey] = nm
-					}
-				} else {
-					providers[newKey] = nm
-				}
-			}
-		}
-
-		// If subscription has NO groups, create a select group of its proxies + providers.
-		rawGroups := asSlice(doc["proxy-groups"])
-		if len(rawGroups) == 0 {
-			gName := uniqueName(sub.Name, takenGroup)
-			takenGroup[gName] = true
-			groupRename[sub.Name] = gName
-			g := map[string]any{
-				"name":    gName,
-				"type":    "select",
-				"proxies": []string{"DIRECT"},
-			}
-			var list []string
-			for _, newName := range proxyRename {
-				list = append(list, newName)
-			}
-			if len(list) > 0 {
-				g["proxies"] = append([]string{"DIRECT"}, list...)
-			}
-			var use []string
-			for _, nk := range provRename {
-				use = append(use, nk)
-			}
-			if len(use) > 0 {
-				g["use"] = use
-			}
-			groups = append(groups, g)
-			subTopGroups = append(subTopGroups, gName)
-		} else {
-			// First pass: reserve group names
-			for _, g := range rawGroups {
-				m := asMap(g)
-				if m == nil {
-					continue
-				}
-				old := str(m["name"])
-				if old == "" {
-					continue
-				}
-				newName := old
-				if takenGroup[newName] || takenProxy[newName] {
-					newName = uniqueName(prefix+old, takenGroup)
-				} else {
-					takenGroup[newName] = true
-				}
-				groupRename[old] = newName
-			}
-			// Second pass: rewrite references
-			for _, g := range rawGroups {
-				m := asMap(g)
-				if m == nil {
-					continue
-				}
-				old := str(m["name"])
-				nm := cloneMap(m)
-				nm["name"] = groupRename[old]
-
-				var nextProxies []any
-				seenProxy := map[string]bool{}
-				addProxy := func(s string) {
-					if s == "" || seenProxy[s] {
-						return
-					}
-					seenProxy[s] = true
-					nextProxies = append(nextProxies, s)
-				}
-
-				if pl := asSlice(nm["proxies"]); pl != nil {
-					for _, x := range pl {
-						s := str(x)
-						if s == "" {
-							continue
-						}
-						if nn, ok := proxyRename[s]; ok {
-							addProxy(nn)
-						} else if nn, ok := groupRename[s]; ok {
-							addProxy(nn)
-						} else if s == "DIRECT" || s == "REJECT" || s == "PASS" {
-							addProxy(s)
-						} else {
-							addProxy(s)
-						}
-					}
-				}
-
-				// Expand use:[provider] into concrete proxy names when materialized.
-				// If provider failed → keep empty (no silent fill with unrelated nodes).
-				var nextUse []any
-				if ul := asSlice(nm["use"]); ul != nil {
-					for _, x := range ul {
-						s := str(x)
-						if namesCSV, ok := provRename[s+".__names__"]; ok && namesCSV != "" {
-							for _, n := range strings.Split(namesCSV, "\x1e") {
-								addProxy(n)
-							}
-							// drop live use — names already inlined
-						} else if nk, ok := provRename[s]; ok {
-							// provider exists but not materialized: keep http use so
-							// mihomo can retry later; group may show empty until then
-							nextUse = append(nextUse, nk)
-							result.Warnings = append(result.Warnings,
-								fmt.Sprintf("组 %s 依赖的 provider %s 暂无节点", groupRename[old], s))
-						} else {
-							nextUse = append(nextUse, s)
-						}
-					}
-				}
-
-				if len(nextProxies) > 0 {
-					nm["proxies"] = nextProxies
-				} else {
-					delete(nm, "proxies")
-				}
-				if len(nextUse) > 0 {
-					nm["use"] = nextUse
-				} else {
-					delete(nm, "use")
-				}
-				groups = append(groups, nm)
-			}
-			if len(rawGroups) > 0 {
-				if m := asMap(rawGroups[0]); m != nil {
-					if nn := groupRename[str(m["name"])]; nn != "" {
-						subTopGroups = append(subTopGroups, nn)
-					}
-				}
-			}
-		}
-
-		// rewrite dialer-proxy references now that proxy/group renames are known
-		for _, p := range proxies {
-			rewriteDialerRefs(asMap(p), proxyRename, groupRename)
-		}
-		for _, g := range groups {
-			rewriteDialerRefs(asMap(g), proxyRename, groupRename)
-		}
-
-		// hosts
-		if hm := asMap(doc["hosts"]); hm != nil {
-			for k, v := range hm {
-				hosts[k] = v
-			}
-		}
-
-		// rules
-		for _, r := range asSlice(doc["rules"]) {
-			s := str(r)
-			if s == "" {
-				rules = append(rules, r)
+		for _, g := range rawGroups {
+			m := asMap(g)
+			if m == nil {
 				continue
 			}
-			rules = append(rules, rewriteRule(s, proxyRename, groupRename))
+			old := str(m["name"])
+			nm := cloneMap(m)
+			nm["name"] = groupRename[old]
+
+			var nextProxies []any
+			seenProxy := map[string]bool{}
+			addProxy := func(s string) {
+				if s == "" || seenProxy[s] {
+					return
+				}
+				seenProxy[s] = true
+				nextProxies = append(nextProxies, s)
+			}
+
+			if pl := asSlice(nm["proxies"]); pl != nil {
+				for _, x := range pl {
+					s := str(x)
+					if s == "" {
+						continue
+					}
+					if nn, ok := proxyRename[s]; ok {
+						addProxy(nn)
+					} else if nn, ok := groupRename[s]; ok {
+						addProxy(nn)
+					} else {
+						addProxy(s)
+					}
+				}
+			}
+
+			var nextUse []any
+			if ul := asSlice(nm["use"]); ul != nil {
+				for _, x := range ul {
+					s := str(x)
+					if namesCSV, ok := provRename[s+".__names__"]; ok && namesCSV != "" {
+						for _, n := range strings.Split(namesCSV, "\x1e") {
+							addProxy(n)
+						}
+					} else if nk, ok := provRename[s]; ok {
+						nextUse = append(nextUse, nk)
+						warnings = append(warnings, fmt.Sprintf("组 %s 依赖的 provider %s 暂无节点", groupRename[old], s))
+					} else {
+						nextUse = append(nextUse, s)
+					}
+				}
+			}
+
+			if len(nextProxies) > 0 {
+				nm["proxies"] = nextProxies
+			} else {
+				delete(nm, "proxies")
+			}
+			if len(nextUse) > 0 {
+				nm["use"] = nextUse
+			} else {
+				delete(nm, "use")
+			}
+			groups = append(groups, nm)
 		}
-
-		_ = subKey
+		if len(rawGroups) > 0 {
+			if m := asMap(rawGroups[0]); m != nil {
+				if nn := groupRename[str(m["name"])]; nn != "" {
+					subTopGroups = append(subTopGroups, nn)
+				}
+			}
+		}
 	}
 
-	if enabledCount > 0 && result.OK == 0 {
-		return result, fmt.Errorf("全部订阅下载失败: %s", strings.Join(result.Failed, "; "))
+	for _, p := range proxies {
+		rewriteDialerRefs(asMap(p), proxyRename, groupRename)
+	}
+	for _, g := range groups {
+		rewriteDialerRefs(asMap(g), proxyRename, groupRename)
 	}
 
-	// Always expose PROXY + 自动选择 + GLOBAL
-	proxyProxies := []string{"DIRECT", "REJECT"}
-	if len(subTopGroups) > 0 {
-		proxyProxies = append(append([]string{}, subTopGroups...), "DIRECT", "REJECT")
+	if hm := asMap(doc["hosts"]); hm != nil {
+		for k, v := range hm {
+			hosts[k] = v
+		}
+	}
+	for _, r := range asSlice(doc["rules"]) {
+		s := str(r)
+		if s == "" {
+			rules = append(rules, r)
+			continue
+		}
+		rules = append(rules, rewriteRule(s, proxyRename, groupRename))
 	}
 
+	// Keep subscription groups as-is. Only inject GLOBAL for global-mode entry.
+	// Rule default exit (MATCH) points at the subscription top group, not a synthetic PROXY.
 	var finalGroups []any
 	for _, g := range groups {
 		m := asMap(g)
@@ -545,7 +690,8 @@ func ApplySubscriptionsDetailed(basePath string, subs []store.Subscription, forc
 			continue
 		}
 		n := str(m["name"])
-		if n == "PROXY" || n == "GLOBAL" || n == "自动选择" {
+		// avoid colliding with GLOBAL wrapper only
+		if n == "GLOBAL" {
 			nn := uniqueName(n+"_sub", takenGroup)
 			takenGroup[nn] = true
 			m["name"] = nn
@@ -554,85 +700,72 @@ func ApplySubscriptionsDetailed(basePath string, subs []store.Subscription, forc
 					subTopGroups[i] = nn
 				}
 			}
-			proxyProxies = []string{}
-			proxyProxies = append(proxyProxies, subTopGroups...)
-			proxyProxies = append(proxyProxies, "DIRECT", "REJECT")
 		}
 		finalGroups = append(finalGroups, m)
 	}
 
-	autoProxies := []string{}
-	for name := range takenProxy {
-		if name == "DIRECT" || name == "REJECT" || name == "PASS" || name == "COMPATIBLE" {
-			continue
-		}
-		autoProxies = append(autoProxies, name)
-	}
-	var allProvKeys []string
-	for k := range providers {
-		allProvKeys = append(allProvKeys, k)
-	}
-
-	proxyGroup := map[string]any{
-		"name":    "PROXY",
-		"type":    "select",
-		"proxies": proxyProxies,
-	}
-	if len(subTopGroups) > 0 {
-		proxyGroup["proxies"] = append([]string{"自动选择"}, proxyProxies...)
-	}
-
-	autoGroup := map[string]any{
-		"name":      "自动选择",
-		"type":      "url-test",
-		"url":       "https://www.gstatic.com/generate_204",
-		"interval":  300,
-		"tolerance": 50,
-		"proxies":   uniqueStrings(autoProxies),
-	}
-	// only attach providers that were NOT fully materialized (no inline names)
-	// to avoid duplicate node entries in the group
-	var liveProv []string
-	for k := range providers {
-		// if provider cache empty / failed, skip — leaf proxies already listed
-		_ = k
-	}
-	_ = liveProv
-	// keep 自动选择 pure proxies list (all inlined nodes)
-
-	globalGroup := map[string]any{
-		"name":    "GLOBAL",
-		"type":    "select",
-		"proxies": []string{"PROXY", "DIRECT"},
-	}
-	for _, g := range finalGroups {
-		if m := asMap(g); m != nil {
-			n := str(m["name"])
-			if n != "" {
-				globalGroup["proxies"] = append(asStringSlice(globalGroup["proxies"]), n)
+	// default rule exit: first subscription top group, else first final group, else DIRECT
+	matchTarget := "DIRECT"
+	if len(subTopGroups) > 0 && subTopGroups[0] != "" {
+		matchTarget = subTopGroups[0]
+	} else if len(finalGroups) > 0 {
+		if m := asMap(finalGroups[0]); m != nil {
+			if n := str(m["name"]); n != "" {
+				matchTarget = n
 			}
 		}
 	}
-	if len(autoProxies) > 0 || len(allProvKeys) > 0 {
-		globalGroup["proxies"] = append(asStringSlice(globalGroup["proxies"]), "自动选择")
+
+	globalMembers := []string{"DIRECT"}
+	// prefer top groups first, then remaining groups
+	seenGlobal := map[string]bool{"DIRECT": true}
+	addGlobal := func(n string) {
+		if n == "" || seenGlobal[n] {
+			return
+		}
+		seenGlobal[n] = true
+		globalMembers = append(globalMembers, n)
+	}
+	for _, n := range subTopGroups {
+		addGlobal(n)
+	}
+	for _, g := range finalGroups {
+		if m := asMap(g); m != nil {
+			addGlobal(str(m["name"]))
+		}
+	}
+	globalGroup := map[string]any{
+		"name":    "GLOBAL",
+		"type":    "select",
+		"proxies": globalMembers,
 	}
 
-	ordered := []any{proxyGroup, autoGroup}
-	ordered = append(ordered, finalGroups...)
+	ordered := append([]any{}, finalGroups...)
 	ordered = append(ordered, globalGroup)
-
-	root["proxies"] = proxies
-	root["proxy-providers"] = providers
-	root["proxy-groups"] = ordered
-	if len(hosts) > 0 {
-		root["hosts"] = hosts
-	}
 
 	var cleanRules []any
 	for _, r := range rules {
 		s := str(r)
 		if s != "" && strings.HasPrefix(strings.ToUpper(s), "MATCH,") {
 			continue
+		}
+		// rewrite stale PROXY references left by subscription rules → matchTarget
+		if s != "" {
+			parts := strings.Split(s, ",")
+			if len(parts) >= 2 {
+				last := strings.TrimSpace(parts[len(parts)-1])
+				// trailing no-resolve etc.
+				policyIdx := len(parts) - 1
+				if strings.EqualFold(last, "no-resolve") && len(parts) >= 3 {
+					policyIdx = len(parts) - 2
+				}
+				if strings.TrimSpace(parts[policyIdx]) == "PROXY" {
+					parts[policyIdx] = matchTarget
+					s = strings.Join(parts, ",")
+					cleanRules = append(cleanRules, s)
+					continue
+				}
+			}
 		}
 		cleanRules = append(cleanRules, r)
 	}
@@ -653,35 +786,18 @@ func ApplySubscriptionsDetailed(basePath string, subs []store.Subscription, forc
 	if !hasCN {
 		cleanRules = append(cleanRules, "GEOIP,CN,DIRECT")
 	}
-	cleanRules = append(cleanRules, "MATCH,PROXY")
-	root["rules"] = cleanRules
+	cleanRules = append(cleanRules, "MATCH,"+matchTarget)
 
-	if enabledCount == 0 || (result.OK == 0 && enabledCount == 0) {
-		root["proxies"] = []any{}
-		root["proxy-providers"] = map[string]any{}
-		root["proxy-groups"] = []any{
-			map[string]any{"name": "PROXY", "type": "select", "proxies": []string{"DIRECT"}},
-			map[string]any{"name": "GLOBAL", "type": "select", "proxies": []string{"PROXY", "DIRECT"}},
-		}
-		root["rules"] = []any{
-			"GEOIP,private,DIRECT,no-resolve",
-			"GEOIP,CN,DIRECT",
-			"MATCH,PROXY",
-		}
+	fragment := map[string]any{
+		"proxies":         proxies,
+		"proxy-providers": providers,
+		"proxy-groups":    ordered,
+		"rules":           cleanRules,
 	}
-
-	out, err := yaml.Marshal(root)
-	if err != nil {
-		return result, err
+	if len(hosts) > 0 {
+		fragment["hosts"] = hosts
 	}
-	tmp := basePath + ".tmp"
-	if err := os.WriteFile(tmp, out, 0o644); err != nil {
-		return result, err
-	}
-	if err := os.Rename(tmp, basePath); err != nil {
-		return result, err
-	}
-	return result, nil
+	return fragment, warnings, nil
 }
 
 func asStringSlice(v any) []string {
@@ -776,21 +892,30 @@ func uniqueStrings(in []string) []string {
 	return out
 }
 
-// materializeProvider downloads a nested proxy-provider, writes cache file,
-// and inlines its proxies into the main config (with prefix). Returns new names.
+// materializeProvider loads a nested proxy-provider (cache or download),
+// writes cache file, and inlines its proxies. Returns new names.
 func materializeProvider(
 	provURL, cachePath, prefix string,
+	forceRefresh bool,
 	proxies *[]any,
 	takenProxy map[string]bool,
 	proxyRename map[string]string,
 ) ([]string, error) {
-	raw, err := downloadBytes(provURL)
-	if err != nil {
-		return nil, err
+	var raw []byte
+	var err error
+	if !forceRefresh {
+		if b, rerr := os.ReadFile(cachePath); rerr == nil && len(b) > 0 {
+			raw = b
+		}
 	}
-	// write cache for mihomo provider path
-	if err := os.WriteFile(cachePath, raw, 0o644); err != nil {
-		return nil, err
+	if raw == nil {
+		raw, err = downloadBytes(provURL)
+		if err != nil {
+			return nil, err
+		}
+		if err := os.WriteFile(cachePath, raw, 0o644); err != nil {
+			return nil, err
+		}
 	}
 	var doc map[string]any
 	if err := yaml.Unmarshal(raw, &doc); err != nil {
@@ -806,11 +931,8 @@ func materializeProvider(
 		if old == "" {
 			continue
 		}
-		// don't double-prefix if already present
+		// keep original provider node names
 		newName := old
-		if !strings.HasPrefix(old, prefix) {
-			newName = prefix + old
-		}
 		// if this name already taken with same logical node, reuse
 		if takenProxy[newName] {
 			// already inlined (e.g. edge also listed elsewhere) — still list for group

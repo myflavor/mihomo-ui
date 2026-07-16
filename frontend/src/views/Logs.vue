@@ -101,7 +101,6 @@ async function start() {
         pushLine(line)
       }
     }
-    // stream ended cleanly — reconnect
     if (!stopped && es === ctrl) {
       scheduleReconnect()
     }

@@ -19,10 +19,56 @@ if (typeof window !== 'undefined') {
 }
 
 const tabs = [
-  { to: '/', label: '首页', icon: '⌂' },
-  { to: '/proxies', label: '节点', icon: '◎' },
-  { to: '/subs', label: '配置', icon: '☰' },
-  { to: '/logs', label: '日志', icon: '≡' },
+  {
+    to: '/',
+    label: '首页',
+    paths: [
+      'M4.5 10.8 12 4.3l7.5 6.5',
+      'M6.2 9.8V19a1.2 1.2 0 0 0 1.2 1.2h3.1v-4.6a1.2 1.2 0 0 1 1.2-1.2h1.6a1.2 1.2 0 0 1 1.2 1.2v4.6h3.1A1.2 1.2 0 0 0 18.8 19V9.8',
+    ],
+  },
+  {
+    to: '/proxies',
+    label: '节点',
+    paths: [
+      'M12 4.2a2.8 2.8 0 1 1 0 5.6 2.8 2.8 0 0 1 0-5.6Z',
+      'M12 9.8v3.2',
+      'M8.2 16.2h7.6',
+      'M8.2 19.2h7.6',
+      'M12 13v3.2',
+    ],
+  },
+  {
+    to: '/subs',
+    label: '配置',
+    paths: [
+      'M5 7.2h10.5',
+      'M5 12h6.5',
+      'M5 16.8h10.5',
+      'M17.8 7.2a1.4 1.4 0 1 1 0.01 0Z',
+      'M14.2 12a1.4 1.4 0 1 1 0.01 0Z',
+      'M17.8 16.8a1.4 1.4 0 1 1 0.01 0Z',
+    ],
+  },
+  {
+    to: '/connections',
+    label: '连接',
+    paths: [
+      'M9.4 8.6a2.9 2.9 0 0 1 4.1 0l.8.8a2.9 2.9 0 0 1 0 4.1',
+      'M14.6 15.4a2.9 2.9 0 0 1-4.1 0l-.8-.8a2.9 2.9 0 0 1 0-4.1',
+      'M10.4 13.6l3.2-3.2',
+    ],
+  },
+  {
+    to: '/logs',
+    label: '日志',
+    paths: [
+      'M7.2 4.5h6.2L17 8.1v11.4a1.3 1.3 0 0 1-1.3 1.3H7.2a1.3 1.3 0 0 1-1.3-1.3V5.8A1.3 1.3 0 0 1 7.2 4.5Z',
+      'M13.3 4.7v3.5H16.8',
+      'M8.8 12.2h6.4',
+      'M8.8 15.6h4.6',
+    ],
+  },
 ]
 
 const active = computed(() => route.path)
@@ -113,7 +159,19 @@ watch(
           :class="{ active: active === t.to }"
           @click="go(t.to)"
         >
-          <span class="nav-icon">{{ t.icon }}</span>
+          <span class="nav-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none">
+              <path
+                v-for="(d, i) in t.paths"
+                :key="i"
+                :d="d"
+                stroke="currentColor"
+                stroke-width="1.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </span>
           {{ t.label }}
         </button>
       </div>
@@ -126,7 +184,19 @@ watch(
           :class="{ active: active === t.to }"
           @click="go(t.to)"
         >
-          <span class="nav-icon">{{ t.icon }}</span>
+          <span class="nav-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none">
+              <path
+                v-for="(d, i) in t.paths"
+                :key="i"
+                :d="d"
+                stroke="currentColor"
+                stroke-width="1.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </span>
           {{ t.label }}
         </button>
       </nav>

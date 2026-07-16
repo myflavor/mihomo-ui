@@ -42,6 +42,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/api/providers/update", s.handleUpdateProvider)
 	mux.HandleFunc("/api/config", s.handleConfig)
 	mux.HandleFunc("/api/logs", s.handleLogs)
+		mux.HandleFunc("/api/traffic", s.handleTraffic)
+		mux.HandleFunc("/api/connections", s.handleConnections)
 
 	mux.HandleFunc("/api/login", s.handleLogin)
 	mux.HandleFunc("/api/auth/check", s.handleAuthCheck)
@@ -187,10 +189,56 @@ func writeErr(w http.ResponseWriter, code int, err error) {
 	writeJSON(w, code, map[string]string{"error": err.Error()})
 }
 
-// applyAndReload applies the *active* subscription only, then hot-reloads mihomo.
-// forceRefresh re-downloads URL sources into raw files before merge.
+// applyAndReload installs the active subscription into config.yaml and hot-reloads.
+// forceRefresh re-downloads URL raw + nested providers then rebuilds prepared.
 func (s *Server) applyAndReload(r *http.Request, forceRefresh bool) (*configgen.ApplyResult, error) {
 	res, err := configgen.ApplySubscriptionsDetailed(s.ConfigPath, s.Store.ActiveList(), forceRefresh)
+	if err != nil {
+		return res, err
+	}
+	if err := s.Mihomo.ReloadConfig(r.Context(), s.ConfigPath); err != nil {
+		return res, err
+	}
+	return res, nil
+}
+
+// buildPrepared builds/rebuilds prepared fragment for one sub (no kernel install).
+func (s *Server) buildPrepared(sub store.Subscription, forceRefresh bool) (*configgen.ApplyResult, error) {
+	return configgen.BuildPrepared(s.ConfigPath, sub, forceRefresh)
+}
+
+// installActiveAndReload installs prepared for the given sub and hot-reloads.
+// Builds prepared lazily if missing. Does not re-download unless prepared is absent.
+func (s *Server) installActiveAndReload(r *http.Request, sub store.Subscription) (*configgen.ApplyResult, error) {
+	res, err := configgen.InstallActive(s.ConfigPath, sub)
+	if err != nil {
+		return res, err
+	}
+	if err := s.Mihomo.ReloadConfig(r.Context(), s.ConfigPath); err != nil {
+		return res, err
+	}
+	return res, nil
+}
+
+// rebuildPreparedAndMaybeInstall rebuilds prepared from raw; if sub is active, install+reload.
+func (s *Server) rebuildPreparedAndMaybeInstall(r *http.Request, sub store.Subscription, forceRefresh bool) (*configgen.ApplyResult, error) {
+	res, err := configgen.BuildPrepared(s.ConfigPath, sub, forceRefresh)
+	if err != nil {
+		return res, err
+	}
+	if !sub.Active {
+		return res, nil
+	}
+	ir, err := configgen.InstallActive(s.ConfigPath, sub)
+	if ir != nil {
+		if res == nil {
+			res = ir
+		} else {
+			res.OK = ir.OK
+			res.Failed = append(res.Failed, ir.Failed...)
+			res.Warnings = append(res.Warnings, ir.Warnings...)
+		}
+	}
 	if err != nil {
 		return res, err
 	}
@@ -217,6 +265,122 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		tun = t
 	}
 	active, _ := s.Store.Active()
+
+	// connections snapshot
+	var connCount int
+	var upTotal, downTotal, mem any
+	if conn, err := s.Mihomo.Connections(ctx); err == nil {
+		if list, ok := conn["connections"].([]any); ok {
+			connCount = len(list)
+		}
+		upTotal = conn["uploadTotal"]
+		downTotal = conn["downloadTotal"]
+		mem = conn["memory"]
+	}
+
+	// current exit: mode-aware group selection
+	mode, _ := cfg["mode"].(string)
+	mode = strings.ToLower(mode)
+	exit := map[string]any{}
+	if px, err := s.Mihomo.Proxies(ctx); err == nil {
+		proxies, _ := px["proxies"].(map[string]any)
+		pick := func(name string) {
+			raw, ok := proxies[name]
+			if !ok {
+				return
+			}
+			m, _ := raw.(map[string]any)
+			if m == nil {
+				return
+			}
+			exit["group"] = name
+			exit["type"] = m["type"]
+			exit["now"] = m["now"]
+			// history delay if present
+			if h, ok := m["history"].([]any); ok && len(h) > 0 {
+				if last, ok := h[len(h)-1].(map[string]any); ok {
+					exit["delay"] = last["delay"]
+				}
+			}
+		}
+		switch mode {
+		case "global":
+			pick("GLOBAL")
+		case "direct":
+			exit["group"] = "DIRECT"
+			exit["now"] = "DIRECT"
+		default:
+			// prefer first non-synthetic selector-like group with a now
+			synthetic := map[string]bool{"GLOBAL": true, "COMPATIBLE": true, "DIRECT": true, "REJECT": true, "PASS": true}
+			// try active sub name as group first
+			if active.Name != "" {
+				if raw, ok := proxies[active.Name]; ok {
+					if m, _ := raw.(map[string]any); m != nil {
+						if t, _ := m["type"].(string); t == "Selector" || t == "URLTest" || t == "Fallback" || t == "LoadBalance" {
+							pick(active.Name)
+						}
+					}
+				}
+			}
+			if exit["group"] == nil {
+				// collect candidate group names
+				var names []string
+				for name, raw := range proxies {
+					if synthetic[name] {
+						continue
+					}
+					m, _ := raw.(map[string]any)
+					if m == nil {
+						continue
+					}
+					t, _ := m["type"].(string)
+					if t == "Selector" || t == "URLTest" || t == "Fallback" || t == "LoadBalance" {
+						names = append(names, name)
+					}
+				}
+				sort.Strings(names)
+				if len(names) > 0 {
+					pick(names[0])
+				}
+			}
+		}
+	}
+
+	// counts for home stats
+	groupCount := 0
+	proxyCount := 0
+	ruleCount := 0
+	groupTypes := map[string]bool{
+		"Selector": true, "URLTest": true, "Fallback": true, "LoadBalance": true, "Relay": true,
+	}
+	hidden := map[string]bool{
+		"COMPATIBLE": true, "Pass": true, "REJECT": true, "REJECT-DROP": true, "PASS": true, "PASS-RULE": true,
+	}
+	if px, err := s.Mihomo.Proxies(ctx); err == nil {
+		proxies, _ := px["proxies"].(map[string]any)
+		for name, raw := range proxies {
+			if hidden[name] {
+				continue
+			}
+			m, _ := raw.(map[string]any)
+			if m == nil {
+				continue
+			}
+			t, _ := m["type"].(string)
+			if groupTypes[t] {
+				// skip pure synthetics for group count? keep GLOBAL/PROXY as groups
+				groupCount++
+			} else if t != "" && t != "Compatible" {
+				proxyCount++
+			}
+		}
+	}
+	if rl, err := s.Mihomo.Rules(ctx); err == nil {
+		if rules, ok := rl["rules"].([]any); ok {
+			ruleCount = len(rules)
+		}
+	}
+
 	writeJSON(w, 200, map[string]any{
 		"mode":          cfg["mode"],
 		"tun":           tun,
@@ -226,9 +390,18 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		"socks-port":    cfg["socks-port"],
 		"allow-lan":     cfg["allow-lan"],
 		"log-level":     cfg["log-level"],
+		"ipv6":          cfg["ipv6"],
 		"config-path":   s.ConfigPath,
 		"subscriptions": len(s.Store.List()),
 		"active":        active,
+		"connections":   connCount,
+		"uploadTotal":   upTotal,
+		"downloadTotal": downTotal,
+		"memory":        mem,
+		"exit":          exit,
+		"groups":        groupCount,
+		"proxies":       proxyCount,
+		"rules":         ruleCount,
 	})
 }
 
@@ -307,14 +480,31 @@ func (s *Server) handleProxies(w http.ResponseWriter, r *http.Request) {
 	groupTypes := map[string]bool{
 		"Selector": true, "URLTest": true, "Fallback": true, "LoadBalance": true, "Relay": true,
 	}
+	// never list as a top-level tab
 	hiddenNames := map[string]bool{
 		"COMPATIBLE": true, "Pass": true, "REJECT": true, "DIRECT": true,
 	}
-	synthetic := map[string]bool{
-		"PROXY": true, "自动选择": true, "GLOBAL": true,
+	// rule mode hides our synthetic wrappers; global mode shows GLOBAL as the entry group
+	ruleHidden := map[string]bool{
+		"GLOBAL": true,
 	}
 	hiddenNodes := map[string]bool{
 		"COMPATIBLE": true, "Pass": true, "REJECT": true,
+	}
+
+	// In global mode mihomo routes everything via GLOBAL — expose GLOBAL first,
+	// then every group referenced by GLOBAL (PROXY / Xin / 自动选择 / …) so the
+	// user can drill into and switch those groups, not just pick among GLOBAL's flat list.
+	var globalMembers map[string]bool
+	if mode == "global" {
+		globalMembers = map[string]bool{}
+		if raw, ok := proxies["GLOBAL"]; ok {
+			if m, ok := raw.(map[string]any); ok {
+				for _, n := range filterNodeNames(m["all"], nil) {
+					globalMembers[n] = true
+				}
+			}
+		}
 	}
 
 	for name, raw := range proxies {
@@ -332,13 +522,14 @@ func (s *Server) handleProxies(w http.ResponseWriter, r *http.Request) {
 
 		switch mode {
 		case "global":
-			if name != "GLOBAL" {
+			// show GLOBAL itself + any group that GLOBAL can select
+			if name != "GLOBAL" && !globalMembers[name] {
 				continue
 			}
 		case "direct":
 			continue
-		default:
-			if synthetic[name] {
+		default: // rule
+			if ruleHidden[name] {
 				continue
 			}
 		}
@@ -358,34 +549,19 @@ func (s *Server) handleProxies(w http.ResponseWriter, r *http.Request) {
 		groups = append(groups, item)
 	}
 
-	if mode == "rule" && len(groups) == 0 {
-		if raw, ok := proxies["PROXY"]; ok {
-			if m, ok := raw.(map[string]any); ok {
-				all := filterNodeNames(m["all"], hiddenNodes)
-				now, _ := m["now"].(string)
-				if hiddenNodes[now] {
-					now = ""
-				}
-				groups = append(groups, map[string]any{
-					"name": "PROXY",
-					"type": m["type"],
-					"now":  now,
-					"all":  all,
-				})
-			}
-		}
-	}
 
 	sort.Slice(groups, func(i, j int) bool {
 		a, b := groups[i]["name"].(string), groups[j]["name"].(string)
 		rank := func(n string) int {
 			switch n {
-			case "Xin":
-				return 0
-			case "PROXY":
-				return 900
 			case "GLOBAL":
-				return 1000
+				return 0 // first tab in global mode
+			case "PROXY":
+				return 10
+			case "自动选择":
+				return 20
+			case "Xin":
+				return 30
 			default:
 				return 100
 			}
@@ -521,7 +697,19 @@ func (s *Server) handleSubscriptions(w http.ResponseWriter, r *http.Request) {
 			}
 		} else if source != "file" && body.URL != "" {
 			// eagerly cache original subscription YAML so 编辑配置 works before activate
-			_, _ = configgen.FetchAndSaveSub(s.ConfigPath, sub)
+			if _, err := configgen.FetchAndSaveSub(s.ConfigPath, sub); err != nil {
+				_ = s.Store.Delete(sub.ID)
+				writeErr(w, 400, err)
+				return
+			}
+		}
+		// build prepared immediately so later switch is fast
+		bres, berr := s.buildPrepared(sub, false)
+		if berr != nil {
+			_ = s.Store.Delete(sub.ID)
+			configgen.DeleteLocalSub(s.ConfigPath, sub.ID)
+			writeJSON(w, 400, map[string]any{"error": berr.Error(), "detail": bres})
+			return
 		}
 		activate := true
 		if body.Activate != nil {
@@ -533,7 +721,7 @@ func (s *Server) handleSubscriptions(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			sub, _ = s.Store.Get(sub.ID)
-			res, err := s.applyAndReload(r, false)
+			res, err := s.installActiveAndReload(r, sub)
 			if err != nil {
 				writeJSON(w, 201, map[string]any{
 					"item":  sub,
@@ -544,7 +732,7 @@ func (s *Server) handleSubscriptions(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 201, map[string]any{"item": sub, "apply": map[string]any{"ok": "1", "detail": res}})
 			return
 		}
-		writeJSON(w, 201, map[string]any{"item": sub})
+		writeJSON(w, 201, map[string]any{"item": sub, "prepared": true})
 	default:
 		writeErr(w, 405, errMethod)
 	}
@@ -609,12 +797,24 @@ func (s *Server) handleSubUpload(w http.ResponseWriter, r *http.Request, existin
 		// ensure source is file when content provided
 		src := "file"
 		sub, _ = s.Store.Update(sub.ID, store.SubPatch{Source: &src})
+	} else if source != "file" && urlStr != "" {
+		if _, err := configgen.FetchAndSaveSub(s.ConfigPath, sub); err != nil {
+			writeErr(w, 400, err)
+			return
+		}
+	}
+
+	// build prepared so switch is fast
+	bres, berr := s.buildPrepared(sub, false)
+	if berr != nil {
+		writeJSON(w, 400, map[string]any{"error": berr.Error(), "detail": bres, "item": sub})
+		return
 	}
 
 	// default activate on create
 	if existingID == "" || r.FormValue("activate") == "1" || r.FormValue("activate") == "true" {
 		sub, _ = s.Store.SetActive(sub.ID)
-		res, err := s.applyAndReload(r, false)
+		res, err := s.installActiveAndReload(r, sub)
 		if err != nil {
 			writeJSON(w, 200, map[string]any{
 				"item":  sub,
@@ -625,7 +825,7 @@ func (s *Server) handleSubUpload(w http.ResponseWriter, r *http.Request, existin
 		writeJSON(w, 200, map[string]any{"item": sub, "apply": map[string]any{"ok": "1", "detail": res}})
 		return
 	}
-	writeJSON(w, 200, map[string]any{"item": sub})
+	writeJSON(w, 200, map[string]any{"item": sub, "prepared": true})
 }
 
 func fmtSscanf(v string, n *int) (int, error) {
@@ -664,12 +864,13 @@ func (s *Server) handleSubscriptionItem(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if action == "activate" && r.Method == http.MethodPost {
+		// install prepared only — no re-download / re-process when prepared exists
 		sub, err := s.Store.SetActive(id)
 		if err != nil {
 			writeErr(w, 404, err)
 			return
 		}
-		res, err := s.applyAndReload(r, false)
+		res, err := s.installActiveAndReload(r, sub)
 		if err != nil {
 			writeJSON(w, 200, map[string]any{
 				"item":  sub,
@@ -678,6 +879,60 @@ func (s *Server) handleSubscriptionItem(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		writeJSON(w, 200, map[string]any{"item": sub, "apply": map[string]any{"ok": "1", "detail": res}})
+		return
+	}
+
+	// /api/subscriptions/{id}/refresh — rebuild raw+prepared for this URL sub
+	if action == "refresh" && r.Method == http.MethodPost {
+		sub, err := s.Store.Get(id)
+		if err != nil {
+			writeErr(w, 404, err)
+			return
+		}
+		if sub.Source == "file" || sub.URL == "" {
+			writeJSON(w, 400, map[string]string{"error": "本地文件无需更新"})
+			return
+		}
+		res, err := s.rebuildPreparedAndMaybeInstall(r, sub, true)
+		if err != nil {
+			writeJSON(w, 200, map[string]any{
+				"item":  sub,
+				"ok":    false,
+				"error": err.Error(),
+				"detail": res,
+			})
+			return
+		}
+		// touch updatedAt
+		sub, _ = s.Store.Update(id, store.SubPatch{})
+		if sub.Active {
+			// also refresh mihomo providers for active install
+			out, perr := s.Mihomo.Providers(r.Context())
+			var errs []string
+			if perr == nil {
+				providers, _ := out["providers"].(map[string]any)
+				for name, raw := range providers {
+					m, _ := raw.(map[string]any)
+					if vt, _ := m["vehicleType"].(string); vt == "Compatible" {
+						continue
+					}
+					if uerr := s.Mihomo.UpdateProvider(r.Context(), name); uerr != nil {
+						errs = append(errs, name+": "+uerr.Error())
+					}
+				}
+			}
+			if res != nil {
+				errs = append(errs, res.Failed...)
+			}
+			writeJSON(w, 200, map[string]any{
+				"item":   sub,
+				"ok":     len(errs) == 0,
+				"detail": res,
+				"errors": errs,
+			})
+			return
+		}
+		writeJSON(w, 200, map[string]any{"item": sub, "ok": true, "detail": res})
 		return
 	}
 
@@ -746,16 +1001,19 @@ func (s *Server) handleSubscriptionItem(w http.ResponseWriter, r *http.Request) 
 		if body.Activate != nil && *body.Activate {
 			sub, _ = s.Store.SetActive(id)
 		}
-		if sub.Active {
-			res, err := s.applyAndReload(r, false)
-			if err != nil {
-				writeJSON(w, 200, map[string]any{"item": sub, "apply": map[string]any{"ok": "0", "error": err.Error(), "detail": res}})
-				return
-			}
-			writeJSON(w, 200, map[string]any{"item": sub, "apply": map[string]any{"ok": "1", "detail": res}})
+
+		// Always re-run the full pipeline on edit:
+		// - URL sub: re-download raw + nested providers + rebuild prepared
+		// - file/raw content: rebuild prepared from saved bytes
+		// - if active: install + hot reload
+		// Don't try to guess whether remote content changed.
+		forceRefresh := sub.Source != "file" && sub.URL != "" && body.Content == nil
+		res, err := s.rebuildPreparedAndMaybeInstall(r, sub, forceRefresh)
+		if err != nil {
+			writeJSON(w, 200, map[string]any{"item": sub, "apply": map[string]any{"ok": "0", "error": err.Error(), "detail": res}})
 			return
 		}
-		writeJSON(w, 200, map[string]any{"item": sub})
+		writeJSON(w, 200, map[string]any{"item": sub, "apply": map[string]any{"ok": "1", "detail": res}})
 	default:
 		writeErr(w, 405, errMethod)
 	}
@@ -804,23 +1062,19 @@ func (s *Server) handleSubRaw(w http.ResponseWriter, r *http.Request, id string)
 			writeErr(w, 400, err)
 			return
 		}
-		// keep source as-is; only apply when this subscription is active
-		if sub.Active {
-			res, err := s.applyAndReload(r, false)
-			if err != nil {
-				writeJSON(w, 200, map[string]any{
-					"ok":    "0",
-					"path":  path,
-					"error": err.Error(),
-					"detail": res,
-					"applied": true,
-				})
-				return
-			}
-			writeJSON(w, 200, map[string]any{"ok": "1", "path": path, "applied": true, "detail": res})
+		// always rebuild prepared from edited raw; install only when active
+		res, err := s.rebuildPreparedAndMaybeInstall(r, sub, false)
+		if err != nil {
+			writeJSON(w, 200, map[string]any{
+				"ok":      "0",
+				"path":    path,
+				"error":   err.Error(),
+				"detail":  res,
+				"applied": sub.Active,
+			})
 			return
 		}
-		writeJSON(w, 200, map[string]any{"ok": "1", "path": path, "applied": false})
+		writeJSON(w, 200, map[string]any{"ok": "1", "path": path, "applied": sub.Active, "detail": res})
 	default:
 		writeErr(w, 405, errMethod)
 	}
@@ -973,6 +1227,169 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"ok": "1", "path": s.ConfigPath, "reloaded": reload})
 	default:
 		writeErr(w, 405, errMethod)
+	}
+}
+
+
+// handleTraffic proxies mihomo realtime traffic NDJSON stream.
+func (s *Server) handleTraffic(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, 405, errMethod)
+		return
+	}
+	s.proxyMihomoStream(w, r, "/traffic")
+}
+
+// handleConnections: GET full snapshot, DELETE close all, or DELETE ?id= for one.
+func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		out, err := s.Mihomo.Connections(r.Context())
+		if err != nil {
+			writeErr(w, 502, err)
+			return
+		}
+		list, _ := out["connections"].([]any)
+		// newest first
+		for i, j := 0, len(list)-1; i < j; i, j = i+1, j-1 {
+			list[i], list[j] = list[j], list[i]
+		}
+		items := make([]map[string]any, 0, len(list))
+		for _, raw := range list {
+			m, _ := raw.(map[string]any)
+			if m == nil {
+				continue
+			}
+			meta, _ := m["metadata"].(map[string]any)
+			host, process, srcIP, dstIP, srcPort, dstPort := "", "", "", "", "", ""
+			var network, typ any
+			if meta != nil {
+				host, _ = meta["host"].(string)
+				if host == "" {
+					host, _ = meta["destinationIP"].(string)
+				}
+				process, _ = meta["process"].(string)
+				if process == "" {
+					process, _ = meta["processPath"].(string)
+				}
+				network = meta["network"]
+				typ = meta["type"]
+				srcIP, _ = meta["sourceIP"].(string)
+				dstIP, _ = meta["destinationIP"].(string)
+				srcPort, _ = meta["sourcePort"].(string)
+				dstPort, _ = meta["destinationPort"].(string)
+			}
+			chains, _ := m["chains"].([]any)
+			chain := ""
+			var chainList []string
+			for _, c := range chains {
+				if s0, ok := c.(string); ok && s0 != "" {
+					chainList = append(chainList, s0)
+				}
+			}
+			if len(chainList) > 0 {
+				chain = chainList[0]
+			}
+			destHost := host
+			if destHost == "" {
+				destHost = dstIP
+			}
+			destination := destHost
+			if dstPort != "" {
+				destination = destHost + ":" + dstPort
+			}
+			source := srcIP
+			if srcPort != "" {
+				source = srcIP + ":" + srcPort
+			}
+			items = append(items, map[string]any{
+				"id":          m["id"],
+				"host":        host,
+				"network":     network,
+				"type":        typ,
+				"upload":      m["upload"],
+				"download":    m["download"],
+				"rule":        m["rule"],
+				"rulePayload": m["rulePayload"],
+				"chain":       chain,
+				"chains":      chainList,
+				"process":     process,
+				"source":      source,
+				"destination": destination,
+				"start":       m["start"],
+			})
+		}
+		writeJSON(w, 200, map[string]any{
+			"downloadTotal": out["downloadTotal"],
+			"uploadTotal":   out["uploadTotal"],
+			"memory":        out["memory"],
+			"count":         len(items),
+			"items":         items,
+		})
+	case http.MethodDelete:
+		if id := r.URL.Query().Get("id"); id != "" {
+			if err := s.Mihomo.CloseConnection(r.Context(), id); err != nil {
+				writeErr(w, 502, err)
+				return
+			}
+			writeJSON(w, 200, map[string]string{"ok": "1", "id": id})
+			return
+		}
+		if err := s.Mihomo.CloseAllConnections(r.Context()); err != nil {
+			writeErr(w, 502, err)
+			return
+		}
+		writeJSON(w, 200, map[string]string{"ok": "1"})
+	default:
+		writeErr(w, 405, errMethod)
+	}
+}
+
+// proxyMihomoStream flushes client headers immediately then pipes mihomo stream.
+func (s *Server) proxyMihomoStream(w http.ResponseWriter, r *http.Request, path string) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeJSON(w, 500, map[string]string{"error": "streaming unsupported"})
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-ndjson; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache, no-transform")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	base := strings.TrimRight(s.MihomoURL, "/")
+	if base == "" {
+		base = "http://127.0.0.1:9090"
+	}
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, base+path, nil)
+	if err != nil {
+		return
+	}
+	if s.Secret != "" {
+		req.Header.Set("Authorization", "Bearer "+s.Secret)
+	}
+	client := &http.Client{Timeout: 0}
+	resp, err := client.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return
+	}
+	buf := make([]byte, 32*1024)
+	for {
+		n, err := resp.Body.Read(buf)
+		if n > 0 {
+			if _, werr := w.Write(buf[:n]); werr != nil {
+				return
+			}
+			flusher.Flush()
+		}
+		if err != nil {
+			return
+		}
 	}
 }
 

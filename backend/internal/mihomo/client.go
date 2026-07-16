@@ -131,3 +131,23 @@ func (c *Client) GroupDelay(ctx context.Context, group, testURL string, timeout 
 	var out map[string]any
 	return out, c.do(ctx, http.MethodGet, "/group/"+escaped+"/delay?"+q.Encode(), nil, &out)
 }
+
+func (c *Client) Connections(ctx context.Context) (map[string]any, error) {
+	var out map[string]any
+	return out, c.do(ctx, http.MethodGet, "/connections", nil, &out)
+}
+
+func (c *Client) CloseAllConnections(ctx context.Context) error {
+	return c.do(ctx, http.MethodDelete, "/connections", nil, nil)
+}
+
+func (c *Client) CloseConnection(ctx context.Context, id string) error {
+	escaped := url.PathEscape(id)
+	return c.do(ctx, http.MethodDelete, "/connections/"+escaped, nil, nil)
+}
+
+func (c *Client) Rules(ctx context.Context) (map[string]any, error) {
+	var out map[string]any
+	return out, c.do(ctx, http.MethodGet, "/rules", nil, &out)
+}
+

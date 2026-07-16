@@ -1,11 +1,12 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import {
   activateSub,
   addSub,
   deleteSub,
   getSubRaw,
   listSubs,
+  refreshSub,
   refreshSubs,
   saveSubRaw,
   updateSub,
@@ -85,6 +86,13 @@ function toggleMenu(id, e) {
   e?.stopPropagation?.()
   e?.preventDefault?.()
   menuId.value = menuId.value === id ? '' : id
+}
+
+function onGlobalPointerDown(e) {
+  if (!menuId.value) return
+  const el = e.target
+  if (el?.closest?.('.cfg-menu') || el?.closest?.('.cfg-more')) return
+  menuId.value = ''
 }
 
 function openEdit(item, e) {
@@ -176,7 +184,7 @@ async function submit() {
     return
   }
   if (form.source === 'url' && !form.url.trim()) {
-    window.$toast?.('请填写订阅链接')
+    window.$toast?.('请填写订阅地址')
     return
   }
   if (form.source === 'file' && !form.file && !editing.value) {
@@ -187,8 +195,10 @@ async function submit() {
   try {
     const interval = parsedInterval()
     let res
+    const isEdit = !!editing.value
     if (form.source === 'file') {
       if (form.file) {
+        window.$toast?.(isEdit ? '正在重新加载…' : '正在保存…')
         res = await uploadSub({
           id: editing.value?.id,
           name: form.name.trim(),
@@ -198,6 +208,7 @@ async function submit() {
           activate: !editing.value || editing.value.active,
         })
       } else {
+        window.$toast?.('正在重新加载…')
         res = await updateSub(editing.value.id, {
           name: form.name.trim(),
           source: 'file',
@@ -205,6 +216,8 @@ async function submit() {
         })
       }
     } else if (editing.value) {
+      // always full refresh pipeline — remote content / providers may have changed
+      window.$toast?.('正在重新加载…')
       res = await updateSub(editing.value.id, {
         name: form.name.trim(),
         url: form.url.trim(),
@@ -212,6 +225,7 @@ async function submit() {
         interval,
       })
     } else {
+      window.$toast?.('正在添加…')
       res = await addSub({
         name: form.name.trim(),
         url: form.url.trim(),
@@ -222,7 +236,7 @@ async function submit() {
     }
     showForm.value = false
     await refresh()
-    applyNote(res, editing.value ? '已保存' : '已添加并选用')
+    applyNote(res, isEdit ? '已重新加载' : '已保存')
   } catch (e) {
     window.$toast?.(e.message)
   } finally {
@@ -274,6 +288,31 @@ async function doRefresh() {
   }
 }
 
+async function refreshOne(item, e) {
+  e?.stopPropagation?.()
+  menuId.value = ''
+  if (!item || item.source === 'file' || !item.url) {
+    window.$toast?.('本地文件无需更新')
+    return
+  }
+  busy.value = true
+  window.$toast?.(`正在更新 ${item.name}…`)
+  try {
+    const res = await refreshSub(item.id)
+    const fails = res?.errors?.length ? `（${res.errors[0]}）` : ''
+    if (res?.ok === false || res?.error) {
+      window.$toast?.(res.error || `更新失败${fails}`)
+    } else {
+      window.$toast?.(`已更新 ${item.name}${fails}`)
+    }
+    await refresh()
+  } catch (err) {
+    window.$toast?.(err.message)
+  } finally {
+    busy.value = false
+  }
+}
+
 async function saveCfg() {
   if (cfgBusy.value || !cfgDirty.value || !cfgSubId.value) return
   cfgBusy.value = true
@@ -312,11 +351,17 @@ function timeText(item) {
   }
 }
 
-onMounted(refresh)
+onMounted(() => {
+  refresh()
+  document.addEventListener('pointerdown', onGlobalPointerDown, true)
+})
+onUnmounted(() => {
+  document.removeEventListener('pointerdown', onGlobalPointerDown, true)
+})
 </script>
 
 <template>
-  <div class="page" @click="menuId = ''">
+  <div class="page">
     <div class="page-head">
       <h1 class="page-title">配置</h1>
       <div class="page-actions">
@@ -359,10 +404,19 @@ onMounted(refresh)
         </div>
 
         <div v-if="menuId === item.id" class="cfg-menu" @click.stop>
-          <button type="button" class="cfg-menu-item" @click="openConfig(item, $event)">
-            编辑配置
+          <button
+            v-if="item.source !== 'file' && item.url"
+            type="button"
+            class="cfg-menu-item"
+            :disabled="busy"
+            @click="refreshOne(item, $event)"
+          >
+            更新
           </button>
           <button type="button" class="cfg-menu-item" @click="openEdit(item, $event)">编辑</button>
+          <button type="button" class="cfg-menu-item" @click="openConfig(item, $event)">
+            配置
+          </button>
           <button type="button" class="cfg-menu-item danger" @click="remove(item.id, $event)">
             删除
           </button>
@@ -377,7 +431,7 @@ onMounted(refresh)
 
         <div class="field-block">
           <div class="field-label">名称</div>
-          <input v-model="form.name" class="field" placeholder="例如 Xin" />
+          <input v-model="form.name" class="field" placeholder="请输入名称" />
         </div>
 
         <div class="field-block">
@@ -406,17 +460,17 @@ onMounted(refresh)
 
         <template v-if="form.source === 'url'">
           <div class="field-block">
-            <div class="field-label">订阅链接</div>
-            <textarea v-model="form.url" class="field" rows="3" placeholder="https://..." />
+            <div class="field-label">订阅地址</div>
+            <textarea v-model="form.url" class="field" rows="3" placeholder="请输入订阅地址" />
           </div>
           <div class="field-block">
-            <div class="field-label">更新间隔（秒，可选）</div>
+            <div class="field-label">更新间隔（秒）</div>
             <input
               v-model="form.interval"
               class="field"
               type="number"
               min="0"
-              placeholder="留空 = 不自动更新"
+              placeholder="留空不更新"
             />
           </div>
         </template>
@@ -426,7 +480,7 @@ onMounted(refresh)
             <div class="field-label">上传文件</div>
             <label class="file-pick">
               <input type="file" accept=".yaml,.yml,.txt,text/yaml,text/plain" @change="onFile" />
-              <span>{{ form.fileName || (editing ? '选择新文件覆盖…' : '点击选择 YAML…') }}</span>
+              <span>{{ form.fileName || (editing ? '选择新文件覆盖…' : '点击选择文件') }}</span>
             </label>
           </div>
         </template>
@@ -434,7 +488,7 @@ onMounted(refresh)
         <div class="modal-actions">
           <button class="btn btn-ghost" @click="showForm = false">取消</button>
           <button class="btn btn-primary" :disabled="busy" @click="submit">
-            {{ editing ? '保存' : '添加并选用' }}
+            保存
           </button>
         </div>
       </div>
