@@ -76,8 +76,9 @@ mihomo/config.yaml = base.yaml ⊕ 当前配置 ⊕ settings 开关 ⊕ MIHOMO_S
 ```
 
 - 同一时刻只有一个**当前配置**，切换即生效
-- 配置尽量原样交给内核（含 `proxy-providers` / `rule-providers`）
+- 配置尽量原样交给内核（含 `proxy-providers` / `rule-providers` / `rules`）
 - 模式 / 日志级别 / TUN 写在 `settings.yaml`，换配置后仍保留
+- `base.yaml` 只放运行时底座（端口、DNS、TUN 参数等），不放节点/规则
 - `secret`、`external-controller` 由运行时强制写入，不必写进 base
 
 数据目录（`./data` → `/data/mihomo-ui`）：

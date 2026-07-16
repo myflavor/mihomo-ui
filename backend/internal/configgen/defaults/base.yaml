@@ -1,15 +1,16 @@
+# Runtime base only — proxies / groups / rules come from the active config.
+# mode / log-level / tun.enable are owned by settings.yaml (panel overlay).
+
 mixed-port: 7890
 allow-lan: false
 bind-address: 127.0.0.1
-mode: rule
-log-level: info
 
 profile:
   store-selected: true
   store-fake-ip: true
 
 tun:
-  enable: true
+  enable: false
   stack: system
   device: mihomo
   auto-route: true
@@ -28,8 +29,3 @@ dns:
   nameserver:
     - tls://dns.alidns.com
     - tls://dot.pub
-
-proxies: []
-proxy-groups: []
-rules:
-  - MATCH,DIRECT
