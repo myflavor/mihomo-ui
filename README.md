@@ -125,24 +125,3 @@ docker compose up -d
 
 > WSL 下 TUN 与 Windows 自身 TUN 可能冲突，按需开启，不建议常开。
 
----
-
-## 本地构建 / 开发
-
-```bash
-# 本地构建运行
-sudo docker compose up -d --build
-
-# 开发模式
-export UI_PASSWORD=dev
-export MIHOMO_SECRET=change-me
-./scripts/run-ui.sh
-```
-
----
-
-## CI
-
-`.github/workflows/docker.yml` 在 push `main` / 标签 `v*` / 手动触发时，构建多架构镜像推送到 `ghcr.io/myflavor/mihomo-ui`，使用内置 `GITHUB_TOKEN`，无需额外配置。
-
-可用标签：`latest`、`v1.2.3`、`1.2`、`1`、`sha-xxxxxx`。
