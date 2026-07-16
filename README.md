@@ -26,7 +26,6 @@ docker run -d --name mihomo-ui \
 services:
   mihomo-ui:
     image: ghcr.io/myflavor/mihomo-ui:latest
-    container_name: mihomo-ui
     restart: unless-stopped
     network_mode: host
     cap_add:
