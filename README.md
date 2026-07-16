@@ -42,7 +42,6 @@ services:
       - MIHOMO_SECRET=mihomo
     volumes:
       - ./data:/data/mihomo-ui
-    pull_policy: always
 ```
 
 ```bash
