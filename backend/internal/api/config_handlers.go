@@ -65,10 +65,8 @@ func (s *Server) handleConfigCreate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]any{"error": berr.Error(), "detail": bres})
 		return
 	}
-	activate := true
-	if body.Activate != nil {
-		activate = *body.Activate
-	}
+	// add only caches raw; do not switch active unless caller asks
+	activate := body.Activate != nil && *body.Activate
 	if activate {
 		if _, err := s.Store.SetActive(cfg.ID); err != nil {
 			writeErr(w, 500, err)
@@ -146,8 +144,8 @@ func (s *Server) handleConfigUpload(w http.ResponseWriter, r *http.Request, exis
 		return
 	}
 
-	// default activate on create
-	if existingID == "" || r.FormValue("activate") == "1" || r.FormValue("activate") == "true" {
+	// activate only when explicitly requested (create never auto-switches)
+	if r.FormValue("activate") == "1" || r.FormValue("activate") == "true" {
 		cfg, _ = s.Store.SetActive(cfg.ID)
 		res, err := s.installActiveAndReload(cfg)
 		writeConfigApply(w, 200, cfg, res, err)

@@ -1,5 +1,5 @@
 <script setup>
-import { nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref } from 'vue'
 import { authHeaders, getOverview, setLogLevel } from '../api'
 
 defineOptions({ name: 'Logs' })
@@ -11,6 +11,16 @@ const levels = [
   { key: 'error', label: 'Error' },
 ]
 
+// mihomo ranks: lower number = more verbose (DEBUG=0 … SILENT=4)
+const levelRank = {
+  debug: 0,
+  info: 1,
+  warning: 2,
+  warn: 2,
+  error: 3,
+  silent: 4,
+}
+
 const level = ref('info')
 const lines = ref([])
 const paused = ref(false)
@@ -19,13 +29,25 @@ const busy = ref(false)
 const status = ref('idle')
 const autoScroll = ref(true)
 const box = ref(null)
-const maxLines = 500
+/** Ring buffer cap for retained history (all levels; debug can flood). */
+const maxLines = 3000
 
 let es = null
 let buf = ''
 let reconnectTimer = null
 let backoffMs = 1000
 let stopped = false
+let lineSeq = 0
+
+const visibleLines = computed(() => {
+  const floor = levelRank[level.value] ?? levelRank.info
+  return lines.value.filter((row) => {
+    if (row.control) return true
+    const r = levelRank[row.level]
+    if (r == null) return level.value === 'debug'
+    return r >= floor
+  })
+})
 
 function statusLabel() {
   if (paused.value && status.value === 'live') return '已暂停'
@@ -39,6 +61,13 @@ function statusLabel() {
     default:
       return '未连接'
   }
+}
+
+function normalizeLevel(raw) {
+  const l = String(raw || '').toLowerCase()
+  if (l === 'warn') return 'warning'
+  if (levelRank[l] != null) return l
+  return ''
 }
 
 function stop() {
@@ -81,8 +110,8 @@ async function start() {
   const ctrl = new AbortController()
   es = ctrl
   try {
-    // Always subscribe at debug so level changes only reconfigure the kernel;
-    // the stream itself stays connected and does not need reconnect.
+    // Always subscribe at debug so level pills only refilter history client-side;
+    // stream stays open across switches (no history loss).
     const res = await fetch('/api/logs?level=debug', {
       signal: ctrl.signal,
       headers: authHeaders({ Accept: 'application/x-ndjson' }),
@@ -125,17 +154,29 @@ function pushLine(raw) {
   if (paused.value) return
   let payload = raw
   let type = ''
+  let control = false
   try {
     const j = JSON.parse(raw)
-    type = (j.type || j.level || '').toString().toLowerCase()
+    type = normalizeLevel(j.type || j.level) || String(j.type || j.level || '').toLowerCase()
     if (type === 'ping' || type === 'connected') return
+    // stream control errors from our proxy always keep
+    if (type === 'error' && typeof j.payload === 'string' && /upstream|log stream/i.test(j.payload)) {
+      control = true
+    }
     const p = j.payload || j.message || j.msg || raw
     payload = type ? `[${type}] ${p}` : String(p)
   } catch {
-    // plain text
+    // plain text — treat as debug-tier noise
+    type = 'debug'
   }
   const ts = new Date().toLocaleTimeString()
-  lines.value.push({ ts, text: payload })
+  lines.value.push({
+    id: ++lineSeq,
+    ts,
+    text: payload,
+    level: type || '',
+    control,
+  })
   if (lines.value.length > maxLines) {
     lines.value.splice(0, lines.value.length - maxLines)
   }
@@ -160,8 +201,13 @@ async function changeLevel(l) {
   const prev = level.value
   level.value = l
   try {
-    // Only patch kernel log-level; keep the existing stream open.
+    // Kernel stdout follows pill; stream stays on debug (history retained).
     await setLogLevel(l)
+    if (autoScroll.value) {
+      nextTick(() => {
+        if (box.value) box.value.scrollTop = box.value.scrollHeight
+      })
+    }
   } catch (e) {
     level.value = prev
     window.$toast?.(e.message || '设置日志级别失败')
@@ -225,8 +271,8 @@ onUnmounted(stop)
     </div>
 
     <div ref="box" class="card log-box">
-      <div v-if="!lines.length" class="empty" style="padding: 28px">等待日志…</div>
-      <div v-for="(line, i) in lines" :key="i" class="log-line">
+      <div v-if="!visibleLines.length" class="empty" style="padding: 28px">等待日志…</div>
+      <div v-for="line in visibleLines" :key="line.id" class="log-line">
         <span class="log-ts">{{ line.ts }}</span>
         <span class="log-text">{{ line.text }}</span>
       </div>

@@ -878,6 +878,10 @@ func (s *Server) proxyMihomoStream(w http.ResponseWriter, r *http.Request, path 
 // handleLogs proxies mihomo's chunked log stream to the browser as NDJSON.
 // Mihomo may hold response headers until the first log event, so we always
 // flush browser headers + a heartbeat first, then attach to upstream.
+//
+// Query ?level= is forwarded to mihomo /logs?level= (event-bus floor).
+// Kernel log-level only gates stdout; the stream uses its own level filter
+// (default info when omitted) — see mihomo hub/route/server.go getLogs.
 func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeErr(w, 405, errMethod)
@@ -889,8 +893,11 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	level := r.URL.Query().Get("level")
-	if level == "" {
+	level := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("level")))
+	switch level {
+	case "debug", "info", "warning", "error", "silent":
+	default:
+		// match mihomo getLogs default
 		level = "info"
 	}
 
@@ -906,7 +913,7 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	if base == "" {
 		base = "http://127.0.0.1:9090"
 	}
-	upURL := base + "/logs?level=" + urlQueryEscape(level)
+	upURL := base + "/logs?level=" + level
 
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, upURL, nil)
 	if err != nil {
@@ -969,16 +976,6 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return
 		}
-	}
-}
-
-func urlQueryEscape(s string) string {
-	// minimal escape for level values
-	switch s {
-	case "debug", "info", "warning", "error", "silent":
-		return s
-	default:
-		return "info"
 	}
 }
 

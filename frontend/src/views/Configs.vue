@@ -241,7 +241,8 @@ async function submit() {
           url: '',
           interval: 0,
           file: form.file,
-          activate: !editing.value || editing.value.active,
+          // create: only add; edit of active: reinstall after overwrite
+          activate: !!editing.value?.active,
         })
       } else {
         res = await updateConfig(editing.value.id, {
@@ -259,12 +260,13 @@ async function submit() {
         interval,
       })
     } else {
+      // add only — user clicks the card later to switch active
       res = await addConfig({
         name: form.name.trim(),
         url: form.url.trim(),
         source: 'url',
         interval,
-        activate: true,
+        activate: false,
       })
     }
 

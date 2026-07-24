@@ -255,10 +255,8 @@ func (s *Store) normalizeLocked(preferID string) {
 	}
 	if found {
 		s.configID = preferID
-	} else if len(s.configs) > 0 {
-		s.configs[0].Active = true
-		s.configID = s.configs[0].ID
 	} else {
+		// no active selection is valid — kernel runs base shell via InstallEmpty
 		s.configID = ""
 	}
 }
@@ -373,15 +371,12 @@ func (s *Store) Add(name, url, source string, interval int) (Config, error) {
 		Name:      name,
 		URL:       url,
 		Source:    source,
-		Active:    len(s.configs) == 0,
+		Active:    false, // add only; activate is an explicit user action
 		Interval:  interval,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
 	s.configs = append(s.configs, cfg)
-	if cfg.Active {
-		s.configID = cfg.ID
-	}
 	return cfg, s.saveLocked()
 }
 
@@ -463,10 +458,13 @@ func (s *Store) Delete(id string) error {
 		return errors.New("not found")
 	}
 	s.configs = append(s.configs[:idx], s.configs[idx+1:]...)
-	if wasActive && len(s.configs) > 0 {
-		s.configs[0].Active = true
-		s.configID = s.configs[0].ID
-	} else if len(s.configs) == 0 {
+	if wasActive {
+		// deleting the current config returns to base shell, not the next entry
+		for i := range s.configs {
+			s.configs[i].Active = false
+		}
+		s.configID = ""
+	} else if s.configID == id {
 		s.configID = ""
 	}
 	return s.saveLocked()
