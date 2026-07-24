@@ -16,11 +16,12 @@ export function setToken(token) {
 }
 
 export async function api(path, options = {}) {
+  const { headers: extraHeaders, ...rest } = options
   const opts = {
+    ...rest,
     headers: {
-      ...(options.headers || {}),
+      ...(extraHeaders || {}),
     },
-    ...options,
   }
   const token = getToken()
   if (token && !opts.headers.Authorization) {
@@ -62,7 +63,6 @@ export const setLogLevel = (level) => api('/api/log-level', { method: 'POST', bo
 export const getProxies = () => api('/api/proxies')
 export const selectProxy = (group, name) =>
   api('/api/proxies/select', { method: 'POST', body: { group, name } })
-export const testDelay = (name) => api(`/api/proxies/delay?name=${encodeURIComponent(name)}`)
 export const testGroupDelay = (group) =>
   api(`/api/group/delay?group=${encodeURIComponent(group)}`)
 
@@ -76,7 +76,6 @@ export const activateConfig = (id) =>
 export const refreshConfig = (id) =>
   api(`/api/config/${id}/refresh`, { method: 'POST' })
 export const refreshConfigs = () => api('/api/config/refresh', { method: 'POST' })
-export const applyConfigs = () => api('/api/config/apply', { method: 'POST' })
 
 export async function uploadConfig({ id, name, url, interval, file, content, activate }) {
   const fd = new FormData()
@@ -95,10 +94,6 @@ export async function uploadConfig({ id, name, url, interval, file, content, act
 export const getConfigRaw = (id) => api(`/api/config/${id}/raw`)
 export const saveConfigRaw = (id, content) =>
   api(`/api/config/${id}/raw`, { method: 'PUT', body: { content } })
-
-export const getRuntime = () => api('/api/runtime')
-export const saveRuntime = (content, reload = true) =>
-  api('/api/runtime', { method: 'PUT', body: { content, reload } })
 
 export const getConnections = () => api('/api/connections')
 export const closeAllConnections = () => api('/api/connections', { method: 'DELETE' })

@@ -18,6 +18,8 @@ defineOptions({ name: 'Configs' })
 const items = ref([])
 const loading = ref(true)
 const busy = ref(false)
+const busyLabel = ref('')
+const busyDetail = ref('')
 const menuId = ref('')
 
 const showForm = ref(false)
@@ -41,23 +43,42 @@ const cfgContent = ref('')
 const cfgOriginal = ref('')
 const cfgDirty = computed(() => cfgContent.value !== cfgOriginal.value)
 
-const activeId = computed(() => items.value.find((i) => i.active)?.id || '')
+const showDelete = ref(false)
+const deleteTarget = ref(null)
 
-function applyNote(res, okMsg) {
+function setBusy(label = '', detail = '') {
+  busy.value = true
+  busyLabel.value = label
+  busyDetail.value = detail
+}
+
+function clearBusy() {
+  busy.value = false
+  busyLabel.value = ''
+  busyDetail.value = ''
+}
+
+/** Normalize apply result: { ok, message }. ok=false means partial/hard apply failure. */
+function interpretApply(res, okMsg) {
   const apply = res?.apply
   if (apply && apply.ok === '0') {
-    window.$toast?.(apply.error || '已保存，但写入内核失败')
-    return
+    return { ok: false, message: apply.error || '已保存，但写入内核失败' }
   }
   if (apply?.detail?.Failed?.length) {
-    window.$toast?.(`${okMsg}（失败：${apply.detail.Failed.join('；')}）`)
-    return
+    return {
+      ok: false,
+      message: `${okMsg}（失败：${apply.detail.Failed.join('；')}）`,
+    }
   }
   if (apply?.detail?.Warnings?.length) {
-    window.$toast?.(`${okMsg}（${apply.detail.Warnings[0]}）`)
-    return
+    return { ok: true, message: `${okMsg}（${apply.detail.Warnings[0]}）` }
   }
-  window.$toast?.(okMsg)
+  return { ok: true, message: okMsg }
+}
+
+function toastApply(res, okMsg) {
+  const { message } = interpretApply(res, okMsg)
+  window.$toast?.(message)
 }
 
 async function refresh() {
@@ -111,19 +132,34 @@ function openEdit(item, e) {
   })
 }
 
-async function remove(id, e) {
+function askRemove(item, e) {
   e?.stopPropagation?.()
   menuId.value = ''
-  if (!confirm('删除该配置？')) return
-  busy.value = true
+  if (!item?.id || busy.value) return
+  deleteTarget.value = item
+  showDelete.value = true
+}
+
+function cancelDelete() {
+  if (busy.value) return
+  showDelete.value = false
+  deleteTarget.value = null
+}
+
+async function confirmDelete() {
+  const item = deleteTarget.value
+  if (!item?.id || busy.value) return
+  setBusy('删除中')
   try {
-    const res = await deleteConfig(id)
+    const res = await deleteConfig(item.id)
+    showDelete.value = false
+    deleteTarget.value = null
     await refresh()
-    applyNote(res, '已删除')
+    toastApply(res, '已删除')
   } catch (e2) {
     window.$toast?.(e2.message)
   } finally {
-    busy.value = false
+    clearBusy()
   }
 }
 
@@ -178,6 +214,7 @@ function parsedInterval() {
 }
 
 async function submit() {
+  if (busy.value) return
   if (!form.name.trim()) {
     window.$toast?.('请填写名称')
     return
@@ -190,14 +227,14 @@ async function submit() {
     window.$toast?.('请选择配置文件')
     return
   }
-  busy.value = true
+  const isEdit = !!editing.value
+  const interval = parsedInterval()
+  const okMsg = isEdit ? '已重新加载' : '已保存'
+  setBusy(isEdit ? '重新加载中' : '保存中')
   try {
-    const interval = parsedInterval()
     let res
-    const isEdit = !!editing.value
     if (form.source === 'file') {
       if (form.file) {
-        window.$toast?.(isEdit ? '正在重新加载…' : '正在保存…')
         res = await uploadConfig({
           id: editing.value?.id,
           name: form.name.trim(),
@@ -207,7 +244,6 @@ async function submit() {
           activate: !editing.value || editing.value.active,
         })
       } else {
-        window.$toast?.('正在重新加载…')
         res = await updateConfig(editing.value.id, {
           name: form.name.trim(),
           source: 'file',
@@ -216,7 +252,6 @@ async function submit() {
       }
     } else if (editing.value) {
       // always full refresh pipeline — remote content / providers may have changed
-      window.$toast?.('正在重新加载…')
       res = await updateConfig(editing.value.id, {
         name: form.name.trim(),
         url: form.url.trim(),
@@ -224,7 +259,6 @@ async function submit() {
         interval,
       })
     } else {
-      window.$toast?.('正在添加…')
       res = await addConfig({
         name: form.name.trim(),
         url: form.url.trim(),
@@ -233,13 +267,24 @@ async function submit() {
         activate: true,
       })
     }
+
+    const outcome = interpretApply(res, okMsg)
+    // 仅完全成功才关弹窗；失败/半失败保留表单，方便改完再提交
+    if (!outcome.ok) {
+      window.$toast?.(outcome.message)
+      await refresh()
+      return
+    }
+
     showForm.value = false
     await refresh()
-    applyNote(res, isEdit ? '已重新加载' : '已保存')
+    window.$toast?.(outcome.message)
   } catch (e) {
-    window.$toast?.(e.message)
+    window.$toast?.(e.message || '请求失败')
+    // 失败不关弹窗；再 list 一次避免后端其实已写入
+    await refresh()
   } finally {
-    busy.value = false
+    clearBusy()
   }
 }
 
@@ -249,15 +294,15 @@ async function onCardClick(item) {
     return
   }
   if (item.active || busy.value) return
-  busy.value = true
+  setBusy('切换配置中', item.name)
   try {
     const res = await activateConfig(item.id)
     await refresh()
-    applyNote(res, `已切换到 ${item.name}`)
+    toastApply(res, `已切换到 ${item.name}`)
   } catch (e) {
     window.$toast?.(e.message)
   } finally {
-    busy.value = false
+    clearBusy()
   }
 }
 
@@ -272,8 +317,7 @@ async function doRefresh() {
     window.$toast?.('没有可更新的 URL 配置')
     return
   }
-  busy.value = true
-  window.$toast?.(`正在更新 ${urlItems.length} 个配置…`)
+  setBusy('更新订阅中', `共 ${urlItems.length} 个`)
   try {
     const res = await refreshConfigs()
     const n = res?.refreshed ?? urlItems.length
@@ -287,7 +331,7 @@ async function doRefresh() {
   } catch (err) {
     window.$toast?.(err.message)
   } finally {
-    busy.value = false
+    clearBusy()
   }
 }
 
@@ -298,8 +342,7 @@ async function refreshOne(item, e) {
     window.$toast?.('本地文件无需更新')
     return
   }
-  busy.value = true
-  window.$toast?.(`正在更新 ${item.name}…`)
+  setBusy('更新订阅中', item.name)
   try {
     const res = await refreshConfig(item.id)
     const fails = res?.errors?.length ? `（${res.errors[0]}）` : ''
@@ -312,7 +355,7 @@ async function refreshOne(item, e) {
   } catch (err) {
     window.$toast?.(err.message)
   } finally {
-    busy.value = false
+    clearBusy()
   }
 }
 
@@ -420,7 +463,7 @@ onUnmounted(() => {
           <button type="button" class="cfg-menu-item" @click="openConfig(item, $event)">
             配置
           </button>
-          <button type="button" class="cfg-menu-item danger" @click="remove(item.id, $event)">
+          <button type="button" class="cfg-menu-item danger" @click="askRemove(item, $event)">
             删除
           </button>
         </div>
@@ -429,32 +472,41 @@ onUnmounted(() => {
 
     <!-- add / edit config meta -->
     <Transition name="modal-fade">
-      <div v-if="showForm" class="modal-mask" @click.self="showForm = false">
+      <div
+        v-if="showForm"
+        class="modal-mask"
+        @click.self="!busy && (showForm = false)"
+      >
         <div class="modal">
           <h3>{{ editing ? '编辑' : '添加配置' }}</h3>
 
           <div class="field-block">
             <div class="field-label">名称</div>
-            <input v-model="form.name" class="field" placeholder="请输入名称" />
+            <input
+              v-model="form.name"
+              class="field"
+              placeholder="请输入名称"
+              :disabled="busy"
+            />
           </div>
 
           <div class="field-block">
             <div class="field-label">来源</div>
-            <div class="pill-group" style="width: 100%">
+            <div class="pill-group pill-group-stretch">
               <button
                 class="pill"
-                style="flex: 1"
                 :class="{ active: form.source === 'url' }"
                 type="button"
+                :disabled="busy"
                 @click="setSource('url')"
               >
                 订阅 URL
               </button>
               <button
                 class="pill"
-                style="flex: 1"
                 :class="{ active: form.source === 'file' }"
                 type="button"
+                :disabled="busy"
                 @click="setSource('file')"
               >
                 本地文件
@@ -465,7 +517,13 @@ onUnmounted(() => {
           <template v-if="form.source === 'url'">
             <div class="field-block">
               <div class="field-label">订阅地址</div>
-              <textarea v-model="form.url" class="field" rows="3" placeholder="请输入订阅地址" />
+              <textarea
+                v-model="form.url"
+                class="field"
+                rows="3"
+                placeholder="请输入订阅地址"
+                :disabled="busy"
+              />
             </div>
             <div class="field-block">
               <div class="field-label">更新间隔（秒）</div>
@@ -475,6 +533,7 @@ onUnmounted(() => {
                 type="number"
                 min="0"
                 placeholder="留空不更新"
+                :disabled="busy"
               />
             </div>
           </template>
@@ -482,19 +541,67 @@ onUnmounted(() => {
           <template v-else>
             <div class="field-block">
               <div class="field-label">上传文件</div>
-              <label class="file-pick">
-                <input type="file" accept=".yaml,.yml,.txt,text/yaml,text/plain" @change="onFile" />
+              <label class="file-pick" :class="{ disabled: busy }">
+                <input
+                  type="file"
+                  accept=".yaml,.yml,.txt,text/yaml,text/plain"
+                  :disabled="busy"
+                  @change="onFile"
+                />
                 <span>{{ form.fileName || (editing ? '选择新文件覆盖…' : '点击选择文件') }}</span>
               </label>
             </div>
           </template>
 
           <div class="modal-actions">
-            <button class="btn btn-ghost" @click="showForm = false">取消</button>
+            <button class="btn btn-ghost" :disabled="busy" @click="showForm = false">取消</button>
             <button class="btn btn-primary" :disabled="busy" @click="submit">
-              保存
+              <span v-if="busy" class="btn-inline-busy">
+                <span class="spin" aria-hidden="true" />
+                <span>保存</span>
+              </span>
+              <span v-else>保存</span>
             </button>
           </div>
+        </div>
+      </div>
+    </Transition>
+
+    <!-- delete confirm -->
+    <Transition name="modal-fade">
+      <div
+        v-if="showDelete"
+        class="modal-mask"
+        @click.self="cancelDelete"
+      >
+        <div class="modal modal-confirm">
+          <h3>删除配置</h3>
+          <p class="confirm-text">
+            确定删除
+            <strong>{{ deleteTarget?.name || '该配置' }}</strong>
+            ？此操作不可撤销。
+          </p>
+          <div class="modal-actions">
+            <button class="btn btn-ghost" :disabled="busy" @click="cancelDelete">取消</button>
+            <button class="btn btn-danger-solid" :disabled="busy" @click="confirmDelete">
+              <span v-if="busy" class="btn-inline-busy">
+                <span class="spin" aria-hidden="true" />
+                <span>删除</span>
+              </span>
+              <span v-else>删除</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+
+    <!-- page-level busy for non-modal actions (switch / bulk refresh) -->
+    <Transition name="page-busy-fade">
+      <div v-if="busy && !showForm && !showDelete" class="page-busy" role="status" aria-live="polite">
+        <span class="spin spin-light" aria-hidden="true" />
+        <div class="page-busy-text">
+          <div class="page-busy-title">{{ busyLabel || '处理中' }}</div>
+          <div v-if="busyDetail" class="page-busy-sub">{{ busyDetail }}</div>
         </div>
       </div>
     </Transition>
@@ -515,7 +622,7 @@ onUnmounted(() => {
               ×
             </button>
           </div>
-          <div v-if="cfgLoading" class="empty" style="padding: 24px">加载中…</div>
+          <div v-if="cfgLoading" class="empty empty-pad">加载中…</div>
           <textarea
             v-else
             v-model="cfgContent"
