@@ -367,11 +367,14 @@ async function saveCfg() {
   try {
     const res = await saveConfigRaw(cfgId.value, cfgContent.value)
     if (res.ok === '0') {
+      // file may be written but kernel reload failed — keep editor open
       window.$toast?.(res.error || '保存失败')
-    } else {
-      window.$toast?.('已保存')
+      cfgOriginal.value = cfgContent.value
+      return
     }
+    window.$toast?.('已保存')
     cfgOriginal.value = cfgContent.value
+    showConfig.value = false
   } catch (e) {
     window.$toast?.(e.message)
   } finally {
