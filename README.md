@@ -46,10 +46,10 @@ docker compose up -d
 | 入口 | 地址 | 说明 |
 |------|------|------|
 | 面板 | http://127.0.0.1:7080 | 密码默认 `mihomo-ui` |
-| 代理 | `127.0.0.1:7890` | mixed-port（HTTP / SOCKS5） |
-| 内核 API | `127.0.0.1:9090` | 地址可用 `MIHOMO_LISTEN` 改；密钥默认每次启动随机 |
+| 代理 | `127.0.0.1:7890` | mixed-port（HTTP / SOCKS5），来自订阅 |
+| 内核 API | `127.0.0.1:9090` | 地址可用 `MIHOMO_API` 改；密钥默认每次启动随机 |
 
-代理端口默认只对本机开放（`allow-lan: false`）；只走 TUN 的话可以设 `PROXY_LISTEN=` 关掉它。
+代理端口默认只对本机开放（`allow-lan: false`）；端口来自订阅或 `override.yaml` 的 `mixed-port`，只走 TUN 的话两者都不设即可。
 
 ---
 
@@ -70,14 +70,14 @@ docker compose up -d
 装载公式：
 
 ```text
-mihomo/config.yaml = base.yaml ⊕ 当前配置 ⊕ settings 开关 ⊕ 内核密钥
+mihomo/config.yaml = 当前配置 ⊕ override.yaml ⊕ settings 开关 ⊕ 系统强制（密钥 / API / profile）
 ```
 
 - 同一时刻只有一个**当前配置**，切换即生效
 - 配置尽量原样交给内核（含 `proxy-providers` / `rule-providers` / `rules`）
 - 模式 / 日志级别 / TUN 写在 `settings.yaml`，换配置后仍保留
-- `base.yaml` 只放运行时底座（DNS、TUN 参数等），不放节点/规则
-- 监听地址与密钥由环境变量强制写入，写进 `base.yaml` 或订阅里都不生效
+- `override.yaml` 是运维者底线，覆盖订阅同名项（DNS、TUN 参数、allow-lan 等），不放节点/规则
+- 内核 API 地址与密钥由环境变量强制写入，`profile.store-selected` / `store-fake-ip` 由代码强制，写进 `override.yaml` 或订阅里都不生效
 
 数据目录（`./data` → `/data/mihomo-ui`）：
 
@@ -86,7 +86,7 @@ data/
   mihomo/
     config.yaml          # 内核运行配置（合并结果）
   ui/
-    base.yaml            # 合并底座（首次从内置模板生成，之后不覆盖）
+    override.yaml        # 运维者底线（首次从内置模板生成，之后不覆盖）
     settings.yaml        # 面板开关 + 配置列表
     config/<id>.yaml     # 各配置原始内容
 ```
@@ -118,22 +118,21 @@ configs:
 |------|------|------|
 | `UI_PASSWORD` | `mihomo-ui` | 面板登录密码，**公网可达时务必修改** |
 | `UI_LISTEN` | `0.0.0.0:7080` | 面板监听（host 网络下即本机端口） |
-| `PROXY_LISTEN` | `127.0.0.1:7890` | HTTP/SOCKS5 代理监听；设为空则不开端口 |
-| `MIHOMO_LISTEN` | `127.0.0.1:9090` | 内核控制 API 监听 |
+| `MIHOMO_API` | `127.0.0.1:9090` | 内核控制 API 监听（面板连内核用） |
 | `MIHOMO_SECRET` | 每次启动随机 | 内核 API 密钥；要用别的客户端连内核时才需固定 |
 | `DATA_HOME` | `data`（镜像内 `/data/mihomo-ui`） | 数据目录（配置、设置、内核 home） |
 | `MIHOMO_BIN` | `./mihomo`（镜像内 `/mihomo`） | 内核二进制路径 |
-| `MIHOMO_PROXY` | 开了 `PROXY_LISTEN` 就用它，否则直连 | 下载订阅走的代理，`direct` 强制直连 |
 | `TZ` | `Asia/Shanghai` | 时区 |
 
-常规使用只需关心前三个，其余都有可用默认值。
+常规使用只需设 `UI_PASSWORD`，其余都有可用默认值。
 
-- **三个 `*_LISTEN` 都是 `host:port`**，格式不对启动即报错并指明是哪个变量
-- **代理端口完全由 `PROXY_LISTEN` 决定**：`base.yaml` 或订阅里写了 `mixed-port` 都不生效；设为空则不开端口；监听非回环地址还需在 `base.yaml` 开 `allow-lan`
-- **`MIHOMO_LISTEN` 撞端口时改它**：9090 被占（Prometheus 等）会导致启动失败，日志会直说
+- **`UI_LISTEN` 与 `MIHOMO_API` 都是 `host:port`**，格式不对启动即报错并指明是哪个变量
+- **代理端口由订阅或 `override.yaml` 的 `mixed-port` 决定**：不再用环境变量强制；监听非回环地址还需在 `override.yaml` 开 `allow-lan`
+- **`MIHOMO_API` 撞端口时改它**：9090 被占（Prometheus 等）会导致启动失败，日志会直说
 - **`MIHOMO_SECRET` 不设则每次启动随机**，要用别的客户端连内核 API 时才需固定，也可从 `data/mihomo/config.yaml` 的 `secret` 读到
-- **`MIHOMO_PROXY` 未设时回落** `HTTP_PROXY` / `http_proxy`
+- **面板下载订阅走标准 `HTTP_PROXY` / `HTTPS_PROXY`**（`http.ProxyFromEnvironment`），不设则直连，不会自动走内核代理端口
 - 前端已编译进二进制，路径默认相对当前目录，直接跑 `./mihomo-ui` 即可；镜像在 ENV 里覆盖成绝对路径
+- 旧名 `MIHOMO_LISTEN` / `PROXY_LISTEN` / `MIHOMO_PROXY` 已移除，设了会拒绝启动并说明
 
 ---
 

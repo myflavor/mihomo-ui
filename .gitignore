@@ -6,6 +6,9 @@ frontend/dist/
 backend/internal/web/dist/*
 !backend/internal/web/dist/.gitkeep
 backend/mihomo-ui
+# kernel binary + panel binary when run/built at repo root
+/mihomo
+/mihomo-ui
 *.exe
 *.log
 *.tmp

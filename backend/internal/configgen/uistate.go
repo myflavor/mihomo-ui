@@ -23,13 +23,13 @@ func DefaultUIState() UIState {
 	}
 }
 
-// DefaultUIStateFromBase reads mode / log-level from base.yaml only.
-func DefaultUIStateFromBase(basePath string) UIState {
+// DefaultUIStateFromOverride reads mode / log-level from override.yaml only.
+func DefaultUIStateFromOverride(overridePath string) UIState {
 	st := DefaultUIState()
-	if basePath == "" {
+	if overridePath == "" {
 		return st
 	}
-	raw, err := os.ReadFile(basePath)
+	raw, err := os.ReadFile(overridePath)
 	if err != nil {
 		return st
 	}

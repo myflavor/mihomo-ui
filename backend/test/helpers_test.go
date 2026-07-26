@@ -181,16 +181,16 @@ func writeJSON(w http.ResponseWriter, v any) {
 
 // env is a fully wired panel over a temp DATA_HOME and a fake kernel.
 type env struct {
-	t          *testing.T
-	Dir        string
-	ConfigPath string // mihomo/config.yaml
-	BasePath   string // ui/base.yaml
-	ConfigDir  string // ui/config
-	Store      *store.Store
-	Kernel     *fakeKernel
-	Svc        *configsvc.Service
-	Server     *api.Server
-	HTTP       *httptest.Server
+	t            *testing.T
+	Dir          string
+	ConfigPath   string // mihomo/config.yaml
+	OverridePath string // ui/override.yaml
+	ConfigDir    string // ui/config
+	Store        *store.Store
+	Kernel       *fakeKernel
+	Svc          *configsvc.Service
+	Server       *api.Server
+	HTTP         *httptest.Server
 }
 
 const testPassword = "test-pw"
@@ -206,8 +206,8 @@ func newEnv(t *testing.T) *env {
 			t.Fatal(err)
 		}
 	}
-	basePath := filepath.Join(uiDir, "base.yaml")
-	if err := configgen.EnsureBase(basePath); err != nil {
+	overridePath := filepath.Join(uiDir, "override.yaml")
+	if err := configgen.EnsureOverride(overridePath); err != nil {
 		t.Fatal(err)
 	}
 	st, err := store.New(filepath.Join(uiDir, "settings.yaml"), store.UIPrefs{
@@ -221,13 +221,13 @@ func newEnv(t *testing.T) *env {
 	configPath := filepath.Join(mihomoDir, "config.yaml")
 
 	svc := &configsvc.Service{
-		ConfigPath: configPath,
-		BasePath:   basePath,
-		ConfigDir:  configDir,
-		Secret:     "test-secret",
-		KernelAPI:  "127.0.0.1:9090",
-		Store:      st,
-		Kernel:     client,
+		ConfigPath:   configPath,
+		OverridePath: overridePath,
+		ConfigDir:    configDir,
+		Secret:       "test-secret",
+		KernelAPI:    "127.0.0.1:9090",
+		Store:        st,
+		Kernel:       client,
 	}
 	srv := &api.Server{
 		Mihomo:     client,
@@ -241,7 +241,7 @@ func newEnv(t *testing.T) *env {
 	t.Cleanup(ts.Close)
 
 	return &env{
-		t: t, Dir: dir, ConfigPath: configPath, BasePath: basePath, ConfigDir: configDir,
+		t: t, Dir: dir, ConfigPath: configPath, OverridePath: overridePath, ConfigDir: configDir,
 		Store: st, Kernel: k, Svc: svc, Server: srv, HTTP: ts,
 	}
 }

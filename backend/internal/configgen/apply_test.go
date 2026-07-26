@@ -16,21 +16,22 @@ func TestInstallActiveMergeOrder(t *testing.T) {
 	uiDir := filepath.Join(dir, "ui")
 	configDir := filepath.Join(uiDir, "config")
 	configPath := filepath.Join(mihomoDir, "config.yaml")
-	base := filepath.Join(uiDir, "base.yaml")
+	override := filepath.Join(uiDir, "override.yaml")
 	if err := os.MkdirAll(mihomoDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(base, []byte(`
+	if err := os.WriteFile(override, []byte(`
 mixed-port: 7890
 mode: rule
 log-level: info
+allow-lan: true
 tun:
   enable: false
   stack: system
-secret: from-base
+secret: from-override
 dns:
   enable: true
   nameserver:
@@ -61,17 +62,16 @@ rules:
   - MATCH,DIRECT
 mode: global
 secret: from-sub
+allow-lan: false
 `)
 	if err := configgen.SaveLocalConfig(configDir, entry.ID, cfgRaw); err != nil {
 		t.Fatal(err)
 	}
 	opts := configgen.InstallOptions{
-		BasePath:  base,
-		ConfigDir: configDir,
-		Secret:    "env-secret",
-		KernelAPI: "127.0.0.1:9090",
-		ProxyHost: "127.0.0.1",
-		ProxyPort: 7890,
+		OverridePath: override,
+		ConfigDir:    configDir,
+		Secret:       "env-secret",
+		KernelAPI:    "127.0.0.1:9090",
 		UI: configgen.UIState{
 			Mode:      "direct",
 			LogLevel:  "warning",
@@ -89,25 +89,41 @@ secret: from-sub
 	if err := yaml.Unmarshal(raw, &doc); err != nil {
 		t.Fatal(err)
 	}
+	// settings overlay wins over both override and subscription.
 	if doc["mode"] != "direct" {
 		t.Fatalf("mode want direct got %v", doc["mode"])
 	}
 	if doc["log-level"] != "warning" {
 		t.Fatalf("log-level want warning got %v", doc["log-level"])
 	}
+	// forced env values win over everything.
 	if doc["secret"] != "env-secret" {
 		t.Fatalf("secret want env-secret got %v", doc["secret"])
 	}
+	// override.yaml wins over the subscription for a shared top-level key.
+	if doc["allow-lan"] != true {
+		t.Fatalf("allow-lan want true (override wins over subscription's false) got %v", doc["allow-lan"])
+	}
 	if doc["mixed-port"] != 7890 {
-		t.Fatalf("mixed-port from base missing: %v", doc["mixed-port"])
+		t.Fatalf("mixed-port from override missing: %v", doc["mixed-port"])
 	}
 	tun, _ := doc["tun"].(map[string]any)
 	if tun == nil || tun["enable"] != true {
 		t.Fatalf("tun.enable want true got %v", tun)
 	}
 	if tun["stack"] != "system" {
-		t.Fatalf("tun.stack should remain from base, got %v", tun["stack"])
+		t.Fatalf("tun.stack should remain from override, got %v", tun["stack"])
 	}
+	// profile.store-selected / store-fake-ip are code-forced, not sourced from
+	// override.yaml or the subscription (neither sets them here).
+	prof, _ := doc["profile"].(map[string]any)
+	if prof == nil || prof["store-selected"] != true {
+		t.Fatalf("profile.store-selected want true (forced) got %v", prof)
+	}
+	if prof == nil || prof["store-fake-ip"] != true {
+		t.Fatalf("profile.store-fake-ip want true (forced) got %v", prof)
+	}
+	// subscription-only keys pass through untouched.
 	if _, ok := doc["proxy-providers"]; !ok {
 		t.Fatal("proxy-providers should pass through from config")
 	}
@@ -120,10 +136,11 @@ secret: from-sub
 	}
 }
 
-// The proxy inlet belongs to PROXY_LISTEN alone: with no port configured it must
-// be stripped from the merged result, even when base.yaml or the subscription
-// asks for one. This is the behaviour a v1.x upgrade depends on.
-func TestInstallActiveDropsProxyPortWhenUnset(t *testing.T) {
+// The proxy port is no longer owned by an env var: mixed-port passes through
+// from the subscription when override.yaml does not set one, and override wins
+// when it does. (v1.x forced it from PROXY_LISTEN and deleted it when unset;
+// that env var is gone.)
+func TestInstallActiveProxyPortPassThrough(t *testing.T) {
 	dir := t.TempDir()
 	mihomoDir := filepath.Join(dir, "mihomo")
 	configDir := filepath.Join(dir, "ui", "config")
@@ -132,24 +149,22 @@ func TestInstallActiveDropsProxyPortWhenUnset(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	base := filepath.Join(dir, "ui", "base.yaml")
-	// A v1.x-shaped base.yaml that still carries the old hardcoded port.
-	if err := os.WriteFile(base, []byte("mixed-port: 7890\nbind-address: 127.0.0.1\n"), 0o644); err != nil {
+	override := filepath.Join(dir, "ui", "override.yaml")
+	if err := os.WriteFile(override, []byte("allow-lan: false\nbind-address: 127.0.0.1\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	entry := store.Config{ID: "s1", Name: "S1", Active: true, Source: "file"}
-	// The subscription asks for one too, from the other direction.
+	// The subscription carries the port; override.yaml does not.
 	if err := configgen.SaveLocalConfig(configDir, entry.ID, []byte("mixed-port: 1080\nrules:\n  - MATCH,DIRECT\n")); err != nil {
 		t.Fatal(err)
 	}
 	configPath := filepath.Join(mihomoDir, "config.yaml")
 
 	opts := configgen.InstallOptions{
-		BasePath:  base,
-		ConfigDir: configDir,
-		Secret:    "env-secret",
-		KernelAPI: "127.0.0.1:9090",
-		// ProxyPort deliberately zero: PROXY_LISTEN was empty.
+		OverridePath: override,
+		ConfigDir:    configDir,
+		Secret:       "env-secret",
+		KernelAPI:    "127.0.0.1:9090",
 	}
 	if _, err := configgen.InstallActive(configPath, entry, opts); err != nil {
 		t.Fatal(err)
@@ -162,12 +177,14 @@ func TestInstallActiveDropsProxyPortWhenUnset(t *testing.T) {
 	if err := yaml.Unmarshal(raw, &doc); err != nil {
 		t.Fatal(err)
 	}
-	if v, ok := doc["mixed-port"]; ok {
-		t.Fatalf("mixed-port survived with no PROXY_LISTEN: %v", v)
+	if doc["mixed-port"] != 1080 {
+		t.Fatalf("mixed-port = %v, want 1080 from the subscription (no longer force-deleted)", doc["mixed-port"])
 	}
 
-	// And with a port configured it wins over both sources.
-	opts.ProxyHost, opts.ProxyPort = "127.0.0.1", 18080
+	// override.yaml wins when it sets one.
+	if err := os.WriteFile(override, []byte("mixed-port: 7890\nbind-address: 127.0.0.1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := configgen.InstallActive(configPath, entry, opts); err != nil {
 		t.Fatal(err)
 	}
@@ -176,11 +193,8 @@ func TestInstallActiveDropsProxyPortWhenUnset(t *testing.T) {
 	if err := yaml.Unmarshal(raw, &doc); err != nil {
 		t.Fatal(err)
 	}
-	if doc["mixed-port"] != 18080 {
-		t.Fatalf("mixed-port = %v, want the configured 18080", doc["mixed-port"])
-	}
-	if doc["bind-address"] != "127.0.0.1" {
-		t.Fatalf("bind-address = %v", doc["bind-address"])
+	if doc["mixed-port"] != 7890 {
+		t.Fatalf("mixed-port = %v, want 7890 from override.yaml (operator baseline wins)", doc["mixed-port"])
 	}
 }
 
@@ -203,7 +217,7 @@ func TestSplitListen(t *testing.T) {
 			continue
 		}
 		if host != tc.host || port != tc.port {
-			t.Errorf("%q → (%q, %d), want (%q, %d)", tc.in, host, port, tc.host, tc.port)
+			t.Errorf("%q -> (%q, %d), want (%q, %d)", tc.in, host, port, tc.host, tc.port)
 		}
 	}
 	for _, bad := range []string{"7890", "127.0.0.1", "", "host:port", "127.0.0.1:99999", "::1:9090"} {

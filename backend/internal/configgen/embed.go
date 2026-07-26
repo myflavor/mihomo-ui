@@ -7,33 +7,33 @@ import (
 	"path/filepath"
 )
 
-//go:embed defaults/base.yaml
-var defaultBaseYAML []byte
+//go:embed defaults/override.yaml
+var defaultOverrideYAML []byte
 
-// DefaultBaseYAML returns the embedded base template.
-func DefaultBaseYAML() []byte {
-	out := make([]byte, len(defaultBaseYAML))
-	copy(out, defaultBaseYAML)
+// DefaultOverrideYAML returns the embedded override template.
+func DefaultOverrideYAML() []byte {
+	out := make([]byte, len(defaultOverrideYAML))
+	copy(out, defaultOverrideYAML)
 	return out
 }
 
-// EnsureBase writes ui/base.yaml from the embedded template if missing.
+// EnsureOverride writes ui/override.yaml from the embedded template if missing.
 // Existing files are never overwritten.
-func EnsureBase(basePath string) error {
-	if basePath == "" {
-		return fmt.Errorf("base path empty")
+func EnsureOverride(overridePath string) error {
+	if overridePath == "" {
+		return fmt.Errorf("override path empty")
 	}
-	if _, err := os.Stat(basePath); err == nil {
+	if _, err := os.Stat(overridePath); err == nil {
 		return nil
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(basePath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(overridePath), 0o755); err != nil {
 		return err
 	}
-	tmp := basePath + ".tmp"
-	if err := os.WriteFile(tmp, DefaultBaseYAML(), 0o644); err != nil {
+	tmp := overridePath + ".tmp"
+	if err := os.WriteFile(tmp, DefaultOverrideYAML(), 0o644); err != nil {
 		return err
 	}
-	return os.Rename(tmp, basePath)
+	return os.Rename(tmp, overridePath)
 }

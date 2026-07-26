@@ -12,7 +12,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"strconv"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -36,15 +35,10 @@ func newKernelSecret() string {
 	return base64.RawURLEncoding.EncodeToString(buf)
 }
 
-// defaultMihomoListen is where mihomo's control API listens unless MIHOMO_LISTEN
+// defaultMihomoAPI is where mihomo's control API listens unless MIHOMO_API
 // says otherwise. Configurable because 9090 is a popular port (Prometheus, for
 // one) and a collision otherwise leaves the panel unable to start with no way out.
-const defaultMihomoListen = "127.0.0.1:9090"
-
-// defaultProxyListen keeps a fresh container usable without any configuration.
-// Set PROXY_LISTEN to an empty value to turn the proxy off — TUN routes at the
-// interface level and needs no inlet port.
-const defaultProxyListen = "127.0.0.1:7890"
+const defaultMihomoAPI = "127.0.0.1:9090"
 
 // defaultUIPassword is what the README ships; worth shouting about if public.
 const defaultUIPassword = "mihomo-ui"
@@ -78,20 +72,22 @@ func killedBySignal(err error) bool {
 	return ws.Signal() == syscall.SIGTERM || ws.Signal() == syscall.SIGKILL
 }
 
-// renamedEnv are the v1 names. Reading them is not the point — refusing to
-// start is: a stale UI_PASSWORD would otherwise be ignored and the panel would
-// come up on the documented default password, which is far worse than a
+// renamedEnv are names the panel used to accept. Refusing to start beats reading
+// them silently: a stale UI_PASSWORD would otherwise be ignored and the panel
+// would come up on the documented default password, which is far worse than a
 // container that fails loudly once during an upgrade.
 var renamedEnv = map[string]string{
-	"UI_ADDR":    "UI_LISTEN",
-	"MIHOMO_API": "MIHOMO_LISTEN",
-	"STATIC_DIR": "nothing — the frontend is compiled into the binary",
+	"UI_ADDR":       "renamed to UI_LISTEN",
+	"MIHOMO_LISTEN": "renamed to MIHOMO_API",
+	"PROXY_LISTEN":  "removed; the proxy port (mixed-port) now comes from override.yaml or the subscription",
+	"MIHOMO_PROXY":  "removed; set HTTP_PROXY/HTTPS_PROXY to proxy subscription downloads",
+	"STATIC_DIR":    "removed; the frontend is compiled into the binary",
 }
 
 func rejectRenamedEnv() {
-	for old, replacement := range renamedEnv {
+	for old, why := range renamedEnv {
 		if os.Getenv(old) != "" {
-			log.Fatalf("%s is no longer used; set %s instead", old, replacement)
+			log.Fatalf("%s is %s", old, why)
 		}
 	}
 }
@@ -139,7 +135,7 @@ func main() {
 	// DATA_HOME/
 	//   mihomo/          kernel home (mihomo -d)
 	//   ui/
-	//     base.yaml      merge base (seeded from embed)
+	//     override.yaml  operator baseline (seeded from embed)
 	//     settings.yaml  panel switches + configs list
 	//     config/        config raw YAML
 	// Relative defaults so a plain `./mihomo-ui` works in a checkout; the image
@@ -155,34 +151,12 @@ func main() {
 	// "./mihomo", not "mihomo": a bare name would be resolved through PATH and
 	// could pick up an unrelated binary instead of the one sitting right here.
 	mihomoBin := env("MIHOMO_BIN", "./mihomo")
-	mihomoListen := env("MIHOMO_LISTEN", defaultMihomoListen)
-	if _, _, err := configgen.SplitListen(mihomoListen); err != nil {
-		log.Fatalf("MIHOMO_LISTEN: %v", err)
-	}
-	// LookupEnv, not Getenv: an explicitly empty PROXY_LISTEN means "no proxy
-	// port", which is different from not having set it at all.
-	proxyListen := defaultProxyListen
-	if v, ok := os.LookupEnv("PROXY_LISTEN"); ok {
-		proxyListen = v
-	}
-	var proxyHost string
-	var proxyPort int
-	if proxyListen != "" {
-		var err error
-		if proxyHost, proxyPort, err = configgen.SplitListen(proxyListen); err != nil {
-			log.Fatalf("PROXY_LISTEN: %v", err)
-		}
-	}
-	if proxyPort > 0 {
-		dialHost := proxyHost
-		switch dialHost {
-		case "", "*", "0.0.0.0", "::":
-			dialHost = "127.0.0.1"
-		}
-		configgen.SetDownloadProxy("http://" + net.JoinHostPort(dialHost, strconv.Itoa(proxyPort)))
+	mihomoAPI := env("MIHOMO_API", defaultMihomoAPI)
+	if _, _, err := configgen.SplitListen(mihomoAPI); err != nil {
+		log.Fatalf("MIHOMO_API: %v", err)
 	}
 	configPath := filepath.Join(mihomoDir, "config.yaml")
-	basePath := filepath.Join(uiDir, "base.yaml")
+	overridePath := filepath.Join(uiDir, "override.yaml")
 	configDir := filepath.Join(uiDir, "config")
 
 	for _, d := range []string{mihomoDir, uiDir, configDir} {
@@ -191,12 +165,12 @@ func main() {
 		}
 	}
 
-	// Seed ui/base.yaml once from embedded template (never overwrite user edits).
-	if err := configgen.EnsureBase(basePath); err != nil {
+	// Seed ui/override.yaml once from embedded template (never overwrite user edits).
+	if err := configgen.EnsureOverride(overridePath); err != nil {
 		log.Fatal(err)
 	}
 
-	def := configgen.DefaultUIStateFromBase(basePath)
+	def := configgen.DefaultUIStateFromOverride(overridePath)
 	cfgStore, err := store.New(filepath.Join(uiDir, "settings.yaml"), store.UIPrefs{
 		Mode:      def.Mode,
 		LogLevel:  def.LogLevel,
@@ -206,15 +180,13 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// base ⊕ config ⊕ settings ⊕ secret → config.yaml; forces secret/controller.
+	// config ⊕ override ⊕ settings ⊕ forced -> config.yaml; forces secret/controller/profile.
 	installOpts := configgen.InstallOptions{
-		BasePath:  basePath,
-		ConfigDir: configDir,
-		Secret:    secret,
-		KernelAPI: mihomoListen,
-		ProxyHost: proxyHost,
-		ProxyPort: proxyPort,
-		UI:        configgen.UIStateFromPrefs(cfgStore.Prefs()),
+		OverridePath: overridePath,
+		ConfigDir:    configDir,
+		Secret:       secret,
+		KernelAPI:    mihomoAPI,
+		UI:           configgen.UIStateFromPrefs(cfgStore.Prefs()),
 	}
 	if err := installBootConfig(configPath, cfgStore.ActiveList(), installOpts); err != nil {
 		log.Fatal(err)
@@ -222,7 +194,7 @@ func main() {
 
 	switch {
 	case uiPassword == "":
-		log.Printf("WARNING: UI_PASSWORD is empty — the panel API is completely open")
+		log.Printf("WARNING: UI_PASSWORD is empty - the panel API is completely open")
 	case uiPassword == defaultUIPassword && !isLoopback(addr):
 		log.Printf("WARNING: UI_PASSWORD is still the documented default and the panel")
 		log.Printf("WARNING: listens on %s. Anyone who can reach that address can take", addr)
@@ -231,7 +203,7 @@ func main() {
 		log.Printf("UI password auth enabled")
 	}
 
-	client := mihomo.NewClient("http://"+mihomoListen, secret)
+	client := mihomo.NewClient("http://"+mihomoAPI, secret)
 
 	// Start mihomo kernel as child process.
 	kernel := &mihomo.Kernel{Bin: mihomoBin, Home: mihomoDir}
@@ -250,15 +222,13 @@ func main() {
 		ConfigPath: configPath,
 		ConfigDir:  configDir,
 		Config: &configsvc.Service{
-			ConfigPath: configPath,
-			BasePath:   basePath,
-			ConfigDir:  configDir,
-			Secret:     secret,
-			KernelAPI:  mihomoListen,
-			ProxyHost:  proxyHost,
-			ProxyPort:  proxyPort,
-			Store:      cfgStore,
-			Kernel:     client,
+			ConfigPath:   configPath,
+			OverridePath: overridePath,
+			ConfigDir:    configDir,
+			Secret:       secret,
+			KernelAPI:    mihomoAPI,
+			Store:        cfgStore,
+			Kernel:       client,
 		},
 	}
 

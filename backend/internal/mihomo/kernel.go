@@ -100,7 +100,7 @@ func (k *Kernel) WaitReady(client *Client, timeout time.Duration) error {
 		// waiting out the timeout would only delay the same failure.
 		var se *StatusError
 		if errors.As(err, &se) && se.Code == http.StatusUnauthorized {
-			return fmt.Errorf("%w: %s — set MIHOMO_LISTEN to a free address", ErrForeignKernel, client.base)
+			return fmt.Errorf("%w: %s — set MIHOMO_API to a free address", ErrForeignKernel, client.base)
 		}
 		last = err
 		time.Sleep(200 * time.Millisecond)

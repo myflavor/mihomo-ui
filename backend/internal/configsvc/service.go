@@ -29,28 +29,24 @@ type Reloader interface {
 
 // Service is the sole writer of mihomo/config.yaml.
 type Service struct {
-	ConfigPath string // mihomo/config.yaml
-	BasePath   string // ui/base.yaml
-	ConfigDir  string // ui/config
-	Secret     string // kernel API credential, generated per boot
-	KernelAPI  string // host:port the kernel's control API is pinned to
-	ProxyHost  string // bind-address for the proxy port
-	ProxyPort  int    // proxy port; 0 means do not open one
-	Store      *store.Store
-	Kernel     Reloader
+	ConfigPath   string // mihomo/config.yaml
+	OverridePath string // ui/override.yaml
+	ConfigDir    string // ui/config
+	Secret       string // kernel API credential, generated per boot
+	KernelAPI    string // host:port the kernel's control API is pinned to
+	Store        *store.Store
+	Kernel       Reloader
 
 	mu sync.Mutex // held only for merge + write + reload, never across network IO
 }
 
 func (s *Service) installOpts() configgen.InstallOptions {
 	return configgen.InstallOptions{
-		BasePath:  s.BasePath,
-		ConfigDir: s.ConfigDir,
-		Secret:    s.Secret,
-		KernelAPI: s.KernelAPI,
-		ProxyHost: s.ProxyHost,
-		ProxyPort: s.ProxyPort,
-		UI:        configgen.UIStateFromPrefs(s.Store.Prefs()),
+		OverridePath: s.OverridePath,
+		ConfigDir:    s.ConfigDir,
+		Secret:       s.Secret,
+		KernelAPI:    s.KernelAPI,
+		UI:           configgen.UIStateFromPrefs(s.Store.Prefs()),
 	}
 }
 
@@ -60,7 +56,7 @@ func (s *Service) reload() error {
 	return s.Kernel.ReloadConfig(ctx, s.ConfigPath)
 }
 
-// installLocked merges base ⊕ cfg ⊕ settings ⊕ secret and reloads; needs s.mu.
+// installLocked merges config ⊕ override ⊕ settings ⊕ forced and reloads; needs s.mu.
 func (s *Service) installLocked(cfg store.Config) (*configgen.ApplyResult, error) {
 	res, err := configgen.InstallActive(s.ConfigPath, cfg, s.installOpts())
 	if err != nil {

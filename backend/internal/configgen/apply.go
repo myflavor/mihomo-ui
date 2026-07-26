@@ -5,11 +5,9 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/xin/mihomo-ui/internal/store"
@@ -18,20 +16,20 @@ import (
 
 // InstallOptions controls the final merge:
 //
-//	config.yaml = ui/base.yaml ⊕ config ⊕ settings ⊕ secret(env)
+//	config.yaml = config ⊕ override.yaml ⊕ settings ⊕ forced
+//
+// forced = secret + external-controller (env) + profile.store-selected/store-fake-ip (code).
 type InstallOptions struct {
-	BasePath  string  // ui/base.yaml
-	ConfigDir string  // ui/config
-	Secret    string  // kernel API credential — always last
-	UI        UIState // panel: mode / log-level / tun.enable
+	OverridePath string  // ui/override.yaml - operator baseline, overrides subscription
+	ConfigDir    string  // ui/config
+	Secret       string  // kernel API credential - always last
+	UI           UIState // panel: mode / log-level / tun.enable
 
 	// KernelAPI is the listen address forced onto external-controller, so the
-	// panel always knows where to reach the kernel it started. ProxyHost and
-	// ProxyPort are the same idea for the HTTP/SOCKS5 inlet: pinned on every
-	// install so a subscription cannot move a port the operator chose.
+	// panel always knows where to reach the kernel it started. The kernel's
+	// proxy inlet (mixed-port) is NOT pinned: it comes from the subscription or
+	// override.yaml, since the operator chose to stop owning that port.
 	KernelAPI string
-	ProxyHost string
-	ProxyPort int
 }
 
 // SplitListen turns a host:port listen address into mihomo's two separate
@@ -118,37 +116,16 @@ func WriteConfigFile(path string, content []byte) error {
 	return os.Rename(tmp, path)
 }
 
-// downloadProxy is what subscription downloads go through when no proxy env is
-// set: main points it at PROXY_LISTEN when the proxy port is on, and leaves it
-// "direct" otherwise — so there is no stale hardcoded port to trip over.
-var downloadProxy = "direct"
-
-// SetDownloadProxy is called once at boot, before any download can start.
-func SetDownloadProxy(p string) { downloadProxy = p }
-
-// downloadHTTPClient prefers MIHOMO_PROXY / HTTP_PROXY, else the boot-time
-// default derived from PROXY_LISTEN. Callers retry directly if the proxied
-// attempt fails, so a wrong proxy only costs one failed request.
+// downloadHTTPClient routes subscription downloads through the standard
+// HTTP_PROXY / HTTPS_PROXY / NO_PROXY env vars (via http.ProxyFromEnvironment).
+// The panel never proxies on the operator's behalf: no proxy env set means a
+// direct download. downloadBytes retries direct on failure, so a wrong proxy
+// only costs one failed request.
 func downloadHTTPClient() *http.Client {
-	proxy := strings.TrimSpace(os.Getenv("MIHOMO_PROXY"))
-	if proxy == "" {
-		proxy = strings.TrimSpace(os.Getenv("HTTP_PROXY"))
+	return &http.Client{
+		Timeout:   60 * time.Second,
+		Transport: &http.Transport{Proxy: http.ProxyFromEnvironment},
 	}
-	if proxy == "" {
-		proxy = strings.TrimSpace(os.Getenv("http_proxy"))
-	}
-	if proxy == "" {
-		proxy = downloadProxy
-	}
-	transport := &http.Transport{
-		Proxy: func(req *http.Request) (*url.URL, error) {
-			if proxy != "" && proxy != "direct" {
-				return url.Parse(proxy)
-			}
-			return nil, nil
-		},
-	}
-	return &http.Client{Timeout: 60 * time.Second, Transport: transport}
 }
 
 func downloadBytes(rawURL string) ([]byte, error) {
@@ -309,7 +286,7 @@ func EnsureConfig(configDir string, cfg store.Config, forceRefresh bool) (*Apply
 	return result, nil
 }
 
-// InstallActive merges base ⊕ config raw ⊕ settings ⊕ secret → config.yaml.
+// InstallActive merges config ⊕ override ⊕ settings ⊕ forced -> config.yaml.
 // Does not re-download unless raw is missing (then one lazy fetch for URL configs).
 func InstallActive(configPath string, cfg store.Config, opts InstallOptions) (*ApplyResult, error) {
 	result := &ApplyResult{}
@@ -326,7 +303,7 @@ func InstallActive(configPath string, cfg store.Config, opts InstallOptions) (*A
 	return result, nil
 }
 
-// InstallEmpty writes base ⊕ empty proxies ⊕ settings ⊕ secret (no active config).
+// InstallEmpty writes override ⊕ empty proxies ⊕ settings ⊕ forced (no active config).
 func InstallEmpty(configPath string, opts InstallOptions) error {
 	empty := map[string]any{
 		"proxies":         []any{},
@@ -338,34 +315,39 @@ func InstallEmpty(configPath string, opts InstallOptions) error {
 }
 
 func writeMergedConfig(configPath string, cfgDoc map[string]any, opts InstallOptions) error {
-	base := map[string]any{}
-	if opts.BasePath != "" {
-		if b, err := loadYAMLFile(opts.BasePath); err == nil {
-			base = b
+	override := map[string]any{}
+	if opts.OverridePath != "" {
+		if b, err := loadYAMLFile(opts.OverridePath); err == nil {
+			override = b
 		} else if !os.IsNotExist(err) {
 			if cur, cerr := loadYAMLFile(configPath); cerr == nil {
-				base = cur
+				override = cur
 			}
 		}
 	} else if cur, err := loadYAMLFile(configPath); err == nil {
-		base = cur
+		override = cur
 	}
 
-	root := mergeYAML(base, cfgDoc)
+	// override.yaml wins over the subscription: the operator's baseline is not
+	// something a remote subscription should be able to rewrite.
+	root := mergeYAML(cfgDoc, override)
 	opts.UI.Overlay(root)
-	// Force the control API address and the per-boot secret, so a subscription
-	// cannot move the kernel out from under the panel or replace its credential.
+	// Forced values - neither override.yaml nor a subscription can touch these.
+	// The control API address and per-boot secret keep the kernel pinned where
+	// the panel can reach it; store-selected / store-fake-ip are load-bearing for
+	// the panel UX (node selection survives restart).
 	if opts.KernelAPI != "" {
 		root["external-controller"] = opts.KernelAPI
 	}
-	if opts.ProxyPort > 0 {
-		root["mixed-port"] = opts.ProxyPort
-		root["bind-address"] = opts.ProxyHost
+	prof := asMap(root["profile"])
+	if prof == nil {
+		prof = map[string]any{}
 	} else {
-		// PROXY_LISTEN owns the inlet outright: off means off, and neither
-		// base.yaml nor a subscription can quietly open a port.
-		delete(root, "mixed-port")
+		prof = cloneMap(prof)
 	}
+	prof["store-selected"] = true
+	prof["store-fake-ip"] = true
+	root["profile"] = prof
 	if opts.Secret != "" {
 		root["secret"] = opts.Secret
 	}

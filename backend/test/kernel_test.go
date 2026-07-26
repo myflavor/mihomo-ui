@@ -195,7 +195,7 @@ func TestWaitReadyFailsFastOnForeignKernel(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Fatalf("took %s; a 401 should fail immediately, not wait out the timeout", elapsed)
 	}
-	if !strings.Contains(err.Error(), "MIHOMO_LISTEN") {
+	if !strings.Contains(err.Error(), "MIHOMO_API") {
 		t.Fatalf("error should name the way out, got: %v", err)
 	}
 }
