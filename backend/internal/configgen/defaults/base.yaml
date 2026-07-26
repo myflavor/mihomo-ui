@@ -1,7 +1,6 @@
 # Runtime base only — proxies / groups / rules come from the active config.
 # mode / log-level / tun.enable are owned by settings.yaml (panel overlay).
 
-mixed-port: 7890
 allow-lan: false
 bind-address: 127.0.0.1
 

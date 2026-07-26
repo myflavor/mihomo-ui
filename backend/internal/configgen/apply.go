@@ -3,10 +3,12 @@ package configgen
 import (
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,8 +22,35 @@ import (
 type InstallOptions struct {
 	BasePath  string  // ui/base.yaml
 	ConfigDir string  // ui/config
-	Secret    string  // MIHOMO_SECRET — always last
+	Secret    string  // kernel API credential — always last
 	UI        UIState // panel: mode / log-level / tun.enable
+
+	// KernelAPI is the listen address forced onto external-controller, so the
+	// panel always knows where to reach the kernel it started. ProxyHost and
+	// ProxyPort are the same idea for the HTTP/SOCKS5 inlet: pinned on every
+	// install so a subscription cannot move a port the operator chose.
+	KernelAPI string
+	ProxyHost string
+	ProxyPort int
+}
+
+// SplitListen turns a host:port listen address into mihomo's two separate
+// fields. The kernel takes external-controller as host:port but its proxy inlet
+// as a bare mixed-port int plus a separate bind-address; accepting one format
+// everywhere and converting here keeps that split out of the user's config.
+func SplitListen(addr string) (host string, port int, err error) {
+	h, p, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "", 0, fmt.Errorf("listen address %q: %w", addr, err)
+	}
+	n, err := strconv.Atoi(p)
+	if err != nil || n < 0 || n > 65535 {
+		return "", 0, fmt.Errorf("listen address %q: bad port", addr)
+	}
+	if h == "" {
+		h = "*" // mihomo spells "every interface" this way
+	}
+	return h, n, nil
 }
 
 func asMap(v any) map[string]any {
@@ -77,11 +106,7 @@ func writeYAMLFile(path string, doc map[string]any) error {
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, out, 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return WriteConfigFile(path, out)
 }
 
 // WriteConfigFile stages then renames, so no reader sees a half-written file.
@@ -93,11 +118,17 @@ func WriteConfigFile(path string, content []byte) error {
 	return os.Rename(tmp, path)
 }
 
-// downloadHTTPClient prefers MIHOMO_PROXY / HTTP_PROXY, else the default
-// mixed-port. Note this fallback is fixed at 7890 and does not follow a
-// mixed-port edited in base.yaml — set MIHOMO_PROXY when you change the port.
-// Callers retry directly if the proxy attempt fails, so a stale port only
-// costs one failed request.
+// downloadProxy is what subscription downloads go through when no proxy env is
+// set: main points it at PROXY_LISTEN when the proxy port is on, and leaves it
+// "direct" otherwise — so there is no stale hardcoded port to trip over.
+var downloadProxy = "direct"
+
+// SetDownloadProxy is called once at boot, before any download can start.
+func SetDownloadProxy(p string) { downloadProxy = p }
+
+// downloadHTTPClient prefers MIHOMO_PROXY / HTTP_PROXY, else the boot-time
+// default derived from PROXY_LISTEN. Callers retry directly if the proxied
+// attempt fails, so a wrong proxy only costs one failed request.
 func downloadHTTPClient() *http.Client {
 	proxy := strings.TrimSpace(os.Getenv("MIHOMO_PROXY"))
 	if proxy == "" {
@@ -107,7 +138,7 @@ func downloadHTTPClient() *http.Client {
 		proxy = strings.TrimSpace(os.Getenv("http_proxy"))
 	}
 	if proxy == "" {
-		proxy = "http://127.0.0.1:7890"
+		proxy = downloadProxy
 	}
 	transport := &http.Transport{
 		Proxy: func(req *http.Request) (*url.URL, error) {
@@ -322,8 +353,19 @@ func writeMergedConfig(configPath string, cfgDoc map[string]any, opts InstallOpt
 
 	root := mergeYAML(base, cfgDoc)
 	opts.UI.Overlay(root)
-	// keep control API on loopback + force secret from env (not stored in base)
-	root["external-controller"] = "127.0.0.1:9090"
+	// Force the control API address and the per-boot secret, so a subscription
+	// cannot move the kernel out from under the panel or replace its credential.
+	if opts.KernelAPI != "" {
+		root["external-controller"] = opts.KernelAPI
+	}
+	if opts.ProxyPort > 0 {
+		root["mixed-port"] = opts.ProxyPort
+		root["bind-address"] = opts.ProxyHost
+	} else {
+		// PROXY_LISTEN owns the inlet outright: off means off, and neither
+		// base.yaml nor a subscription can quietly open a port.
+		delete(root, "mixed-port")
+	}
 	if opts.Secret != "" {
 		root["secret"] = opts.Secret
 	}

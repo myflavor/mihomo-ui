@@ -8,8 +8,24 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
+
+// StatusError is an HTTP status the kernel returned. Typed so callers can react
+// to a specific code — WaitReady treats 401 as "someone else's kernel" — instead
+// of matching on message text.
+type StatusError struct {
+	Code int
+	Body string
+}
+
+func (e *StatusError) Error() string {
+	if e.Body == "" {
+		return fmt.Sprintf("mihomo returned %d", e.Code)
+	}
+	return fmt.Sprintf("mihomo returned %d: %s", e.Code, e.Body)
+}
 
 type Client struct {
 	base   string
@@ -26,6 +42,32 @@ func NewClient(base, secret string) *Client {
 		},
 	}
 }
+
+// OpenStream GETs a long-lived endpoint and hands the caller an undrained body.
+// Same base and secret as do(), but without the read-it-all-and-unmarshal step
+// that makes do() useless for a stream. No timeout either: these stay open.
+func (c *Client) OpenStream(ctx context.Context, path string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	if c.secret != "" {
+		req.Header.Set("Authorization", "Bearer "+c.secret)
+	}
+	resp, err := streamHTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		resp.Body.Close()
+		return nil, fmt.Errorf("upstream %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+	return resp, nil
+}
+
+// streamHTTP has no timeout, unlike the client used for request/response calls.
+var streamHTTP = &http.Client{}
 
 func (c *Client) do(ctx context.Context, method, path string, body any, out any) error {
 	var rdr io.Reader
@@ -56,7 +98,7 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 		return err
 	}
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf("mihomo %s %s: %s (%s)", method, path, resp.Status, string(data))
+		return &StatusError{Code: resp.StatusCode, Body: strings.TrimSpace(string(data))}
 	}
 	if out == nil || len(data) == 0 || resp.StatusCode == http.StatusNoContent {
 		return nil
@@ -150,4 +192,3 @@ func (c *Client) Rules(ctx context.Context) (map[string]any, error) {
 	var out map[string]any
 	return out, c.do(ctx, http.MethodGet, "/rules", nil, &out)
 }
-

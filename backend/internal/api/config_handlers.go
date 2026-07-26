@@ -72,7 +72,7 @@ func (s *Server) handleConfigCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	// add only caches raw; do not switch active unless caller asks
 	if body.Activate != nil && *body.Activate {
-		active, res, err := s.Config.Activate(cfg.ID)
+		active, res, err := s.Config.Activate(cfg.ID, false)
 		// We just created this id, so a miss is our bug, not the client's: 500 not 404.
 		if errors.Is(err, configsvc.ErrNoSuchConfig) {
 			writeErr(w, 500, err)
@@ -142,7 +142,7 @@ func (s *Server) handleConfigUpload(w http.ResponseWriter, r *http.Request, exis
 
 	// activate only when explicitly requested (create never auto-switches)
 	if r.FormValue("activate") == "1" || r.FormValue("activate") == "true" {
-		active, res, err := s.Config.Activate(cfg.ID)
+		active, res, err := s.Config.Activate(cfg.ID, false)
 		if active.ID != "" {
 			cfg = active
 		}
@@ -188,7 +188,7 @@ func (s *Server) handleConfigItem(w http.ResponseWriter, r *http.Request) {
 
 // activateConfig installs from the local raw file — no re-download on switch.
 func (s *Server) activateConfig(w http.ResponseWriter, id string) {
-	cfg, res, err := s.Config.Activate(id)
+	cfg, res, err := s.Config.Activate(id, false)
 	if errors.Is(err, configsvc.ErrNoSuchConfig) {
 		writeErr(w, 404, err)
 		return
@@ -242,7 +242,7 @@ func (s *Server) deleteConfig(w http.ResponseWriter, id string) {
 	}
 	s.Config.DeleteRaw(id)
 	// re-apply new active (if any)
-	res, err := s.Config.ApplyActive(false)
+	res, err := s.Config.ApplyActive()
 	if err != nil {
 		writeJSON(w, 200, map[string]any{"ok": "1", "apply": map[string]any{"ok": "0", "error": err.Error(), "detail": res}})
 		return
@@ -255,51 +255,43 @@ func (s *Server) updateConfig(w http.ResponseWriter, r *http.Request, id string)
 		s.handleConfigUpload(w, r, id)
 		return
 	}
+	// Raw YAML has its own endpoint (/raw); this one only edits the entry.
 	var body struct {
 		Name     *string `json:"name"`
 		URL      *string `json:"url"`
 		Source   *string `json:"source"`
 		Interval *int    `json:"interval"`
-		Content  *string `json:"content"`
 		Activate *bool   `json:"activate"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, 400, err)
 		return
 	}
-	cfg, err := s.Store.Update(id, store.ConfigPatch{
+	patch := store.ConfigPatch{
 		Name: body.Name, URL: body.URL, Source: body.Source, Interval: body.Interval,
-	})
-	if err != nil {
-		writeErr(w, 404, err)
-		return
 	}
-	if body.Content != nil {
-		if err := s.Config.SaveRaw(cfg, []byte(*body.Content)); err != nil {
-			writeErr(w, 400, err)
+
+	if body.Activate != nil && *body.Activate {
+		if _, err := s.Store.Update(id, patch); err != nil {
+			writeErr(w, 404, err)
 			return
 		}
-		// do NOT force source=file — editing raw of a URL cfg keeps source=url
-	}
-	// Always re-run the pipeline on edit rather than guess whether remote changed:
-	// URL configs re-download, local ones reinstall, active ones also hot reload.
-	forceRefresh := cfg.Source != "file" && cfg.URL != "" && body.Content == nil
-
-	// re-apply only if this is the active one, or activate requested
-	if body.Activate != nil && *body.Activate {
-		active, res, err := s.Config.ActivateWithRefresh(id, forceRefresh)
-		// The Update above proved the id exists, so a miss now is inconsistency.
+		// Activating re-downloads on its own, and does it inside the same lock
+		// hold that flips the active flag.
+		cfg, res, err := s.Config.Activate(id, true)
 		if errors.Is(err, configsvc.ErrNoSuchConfig) {
 			writeErr(w, 500, err)
 			return
 		}
-		if active.ID != "" {
-			cfg = active
-		}
 		writeConfigApply(w, 200, cfg, res, err)
 		return
 	}
-	res, err := s.Config.Refresh(cfg, forceRefresh)
+
+	cfg, res, err := s.Config.UpdateMeta(id, patch)
+	if errors.Is(err, configsvc.ErrNoSuchConfig) {
+		writeErr(w, 404, err)
+		return
+	}
 	writeConfigApply(w, 200, cfg, res, err)
 }
 
@@ -362,7 +354,7 @@ func (s *Server) handleApply(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 405, errMethod)
 		return
 	}
-	res, err := s.Config.ApplyActive(false)
+	res, err := s.Config.ApplyActive()
 	if err != nil {
 		writeErr(w, 502, err)
 		return
@@ -404,7 +396,7 @@ func (s *Server) handleRefreshConfigs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Install current active (from refreshed raw if any; file active still reinstalls).
-	ir, err := s.Config.ApplyActive(false)
+	ir, err := s.Config.ApplyActive()
 	if ir != nil {
 		result.OK += ir.OK
 		result.Failed = append(result.Failed, ir.Failed...)

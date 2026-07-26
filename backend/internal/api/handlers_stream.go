@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -11,14 +10,8 @@ import (
 	"time"
 )
 
-// defaultMihomoURL is where the kernel listens when MIHOMO_API is unset.
-const defaultMihomoURL = "http://127.0.0.1:9090"
-
 // logPingInterval keeps an idle log stream from being reaped by proxies.
 const logPingInterval = 15 * time.Second
-
-// streamClient has no timeout: these responses are open-ended by design.
-var streamClient = &http.Client{}
 
 // ndjsonStream is the browser side of a proxied stream. Writes are serialized so
 // handleLogs' heartbeat cannot interleave a line with the copy loop.
@@ -78,31 +71,6 @@ func (n *ndjsonStream) copyFrom(src io.Reader) {
 	}
 }
 
-// openMihomoStream attaches to a kernel endpoint; on success the caller owns Body.
-func (s *Server) openMihomoStream(ctx context.Context, path string) (*http.Response, error) {
-	base := strings.TrimRight(s.MihomoURL, "/")
-	if base == "" {
-		base = defaultMihomoURL
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path, nil)
-	if err != nil {
-		return nil, err
-	}
-	if s.Secret != "" {
-		req.Header.Set("Authorization", "Bearer "+s.Secret)
-	}
-	resp, err := streamClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		resp.Body.Close()
-		return nil, fmt.Errorf("upstream %s: %s", resp.Status, strings.TrimSpace(string(body)))
-	}
-	return resp, nil
-}
-
 // handleTraffic proxies mihomo's realtime traffic NDJSON stream.
 func (s *Server) handleTraffic(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -119,7 +87,7 @@ func (s *Server) proxyMihomoStream(w http.ResponseWriter, r *http.Request, path 
 	if !ok {
 		return
 	}
-	resp, err := s.openMihomoStream(r.Context(), path)
+	resp, err := s.Mihomo.OpenStream(r.Context(), path)
 	if err != nil {
 		return
 	}
@@ -153,7 +121,7 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := s.openMihomoStream(r.Context(), "/logs?level="+level)
+	resp, err := s.Mihomo.OpenStream(r.Context(), "/logs?level="+level)
 	if err != nil {
 		_ = stream.event("error", err.Error())
 		return

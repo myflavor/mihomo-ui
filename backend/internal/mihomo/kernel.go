@@ -2,8 +2,10 @@ package mihomo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"sync"
@@ -70,6 +72,10 @@ func (k *Kernel) Err() error {
 	return k.waitErr
 }
 
+// ErrForeignKernel means the control address answered but rejected our
+// credential — something else is already listening there.
+var ErrForeignKernel = errors.New("another mihomo is already listening on that address")
+
 // WaitReady polls the external-controller until Version succeeds or timeout.
 func (k *Kernel) WaitReady(client *Client, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
@@ -88,6 +94,13 @@ func (k *Kernel) WaitReady(client *Client, timeout time.Duration) error {
 		cancel()
 		if err == nil {
 			return nil
+		}
+		// A 401 is not a "not up yet" condition: our own kernel would accept the
+		// secret we just generated for it. Someone else owns this address, so
+		// waiting out the timeout would only delay the same failure.
+		var se *StatusError
+		if errors.As(err, &se) && se.Code == http.StatusUnauthorized {
+			return fmt.Errorf("%w: %s — set MIHOMO_LISTEN to a free address", ErrForeignKernel, client.base)
 		}
 		last = err
 		time.Sleep(200 * time.Millisecond)

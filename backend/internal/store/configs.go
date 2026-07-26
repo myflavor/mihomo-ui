@@ -419,6 +419,18 @@ func (s *Store) Update(id string, p ConfigPatch) (Config, error) {
 	return Config{}, errors.New("not found")
 }
 
+// ClearActive leaves no config active. Used to undo a SetActive whose install
+// failed on a panel that had nothing active to begin with.
+func (s *Store) ClearActive() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.configs {
+		s.configs[i].Active = false
+	}
+	s.configID = ""
+	return s.saveLocked()
+}
+
 func (s *Store) SetActive(id string) (Config, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

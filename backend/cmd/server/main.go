@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"log"
 	"net"
@@ -10,6 +12,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -20,6 +23,28 @@ import (
 	"github.com/xin/mihomo-ui/internal/mihomo"
 	"github.com/xin/mihomo-ui/internal/store"
 )
+
+// newKernelSecret mints the credential the panel uses to talk to its own
+// kernel. It is generated per boot rather than configured: the control API is
+// pinned to loopback and nothing outside this process ever needs the value, so
+// a fixed default would only be a documented password waiting to be reused.
+func newKernelSecret() string {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		log.Fatalf("generate kernel secret: %v", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(buf)
+}
+
+// defaultMihomoListen is where mihomo's control API listens unless MIHOMO_LISTEN
+// says otherwise. Configurable because 9090 is a popular port (Prometheus, for
+// one) and a collision otherwise leaves the panel unable to start with no way out.
+const defaultMihomoListen = "127.0.0.1:9090"
+
+// defaultProxyListen keeps a fresh container usable without any configuration.
+// Set PROXY_LISTEN to an empty value to turn the proxy off — TUN routes at the
+// interface level and needs no inlet port.
+const defaultProxyListen = "127.0.0.1:7890"
 
 // defaultUIPassword is what the README ships; worth shouting about if public.
 const defaultUIPassword = "mihomo-ui"
@@ -51,6 +76,24 @@ func killedBySignal(err error) bool {
 		return false
 	}
 	return ws.Signal() == syscall.SIGTERM || ws.Signal() == syscall.SIGKILL
+}
+
+// renamedEnv are the v1 names. Reading them is not the point — refusing to
+// start is: a stale UI_PASSWORD would otherwise be ignored and the panel would
+// come up on the documented default password, which is far worse than a
+// container that fails loudly once during an upgrade.
+var renamedEnv = map[string]string{
+	"UI_ADDR":    "UI_LISTEN",
+	"MIHOMO_API": "MIHOMO_LISTEN",
+	"STATIC_DIR": "nothing — the frontend is compiled into the binary",
+}
+
+func rejectRenamedEnv() {
+	for old, replacement := range renamedEnv {
+		if os.Getenv(old) != "" {
+			log.Fatalf("%s is no longer used; set %s instead", old, replacement)
+		}
+	}
 }
 
 func env(key, def string) string {
@@ -91,24 +134,56 @@ func watchKernelExit(kernel *mihomo.Kernel, shuttingDown *atomic.Bool, sigCh cha
 }
 
 func main() {
+	rejectRenamedEnv()
+
 	// DATA_HOME/
 	//   mihomo/          kernel home (mihomo -d)
 	//   ui/
 	//     base.yaml      merge base (seeded from embed)
 	//     settings.yaml  panel switches + configs list
 	//     config/        config raw YAML
-	dataHome := env("DATA_HOME", "/data/mihomo-ui")
+	// Relative defaults so a plain `./mihomo-ui` works in a checkout; the image
+	// overrides both with absolute paths in its ENV.
+	dataHome := env("DATA_HOME", "data")
 	mihomoDir := filepath.Join(dataHome, "mihomo")
 	uiDir := filepath.Join(dataHome, "ui")
-	addr := env("UI_ADDR", ":7080")
-	mihomoURL := env("MIHOMO_API", "http://127.0.0.1:9090")
-	secret := env("MIHOMO_SECRET", "mihomo")
+	addr := env("UI_LISTEN", "0.0.0.0:7080")
+	// MIHOMO_SECRET pins the kernel credential for external API clients; unset
+	// (the default) mints a fresh random one every boot.
+	secret := env("MIHOMO_SECRET", newKernelSecret())
 	uiPassword := env("UI_PASSWORD", defaultUIPassword)
-	mihomoBin := env("MIHOMO_BIN", "/mihomo")
+	// "./mihomo", not "mihomo": a bare name would be resolved through PATH and
+	// could pick up an unrelated binary instead of the one sitting right here.
+	mihomoBin := env("MIHOMO_BIN", "./mihomo")
+	mihomoListen := env("MIHOMO_LISTEN", defaultMihomoListen)
+	if _, _, err := configgen.SplitListen(mihomoListen); err != nil {
+		log.Fatalf("MIHOMO_LISTEN: %v", err)
+	}
+	// LookupEnv, not Getenv: an explicitly empty PROXY_LISTEN means "no proxy
+	// port", which is different from not having set it at all.
+	proxyListen := defaultProxyListen
+	if v, ok := os.LookupEnv("PROXY_LISTEN"); ok {
+		proxyListen = v
+	}
+	var proxyHost string
+	var proxyPort int
+	if proxyListen != "" {
+		var err error
+		if proxyHost, proxyPort, err = configgen.SplitListen(proxyListen); err != nil {
+			log.Fatalf("PROXY_LISTEN: %v", err)
+		}
+	}
+	if proxyPort > 0 {
+		dialHost := proxyHost
+		switch dialHost {
+		case "", "*", "0.0.0.0", "::":
+			dialHost = "127.0.0.1"
+		}
+		configgen.SetDownloadProxy("http://" + net.JoinHostPort(dialHost, strconv.Itoa(proxyPort)))
+	}
 	configPath := filepath.Join(mihomoDir, "config.yaml")
 	basePath := filepath.Join(uiDir, "base.yaml")
 	configDir := filepath.Join(uiDir, "config")
-	staticDir := env("STATIC_DIR", "/app/web")
 
 	for _, d := range []string{mihomoDir, uiDir, configDir} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
@@ -136,6 +211,9 @@ func main() {
 		BasePath:  basePath,
 		ConfigDir: configDir,
 		Secret:    secret,
+		KernelAPI: mihomoListen,
+		ProxyHost: proxyHost,
+		ProxyPort: proxyPort,
 		UI:        configgen.UIStateFromPrefs(cfgStore.Prefs()),
 	}
 	if err := installBootConfig(configPath, cfgStore.ActiveList(), installOpts); err != nil {
@@ -153,7 +231,7 @@ func main() {
 		log.Printf("UI password auth enabled")
 	}
 
-	client := mihomo.NewClient(mihomoURL, secret)
+	client := mihomo.NewClient("http://"+mihomoListen, secret)
 
 	// Start mihomo kernel as child process.
 	kernel := &mihomo.Kernel{Bin: mihomoBin, Home: mihomoDir}
@@ -167,18 +245,18 @@ func main() {
 
 	srv := &api.Server{
 		Mihomo:     client,
-		MihomoURL:  mihomoURL,
-		Secret:     secret,
 		UIPassword: uiPassword,
 		Store:      cfgStore,
 		ConfigPath: configPath,
 		ConfigDir:  configDir,
-		StaticDir:  staticDir,
 		Config: &configsvc.Service{
 			ConfigPath: configPath,
 			BasePath:   basePath,
 			ConfigDir:  configDir,
 			Secret:     secret,
+			KernelAPI:  mihomoListen,
+			ProxyHost:  proxyHost,
+			ProxyPort:  proxyPort,
 			Store:      cfgStore,
 			Kernel:     client,
 		},
@@ -190,7 +268,7 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
-		log.Printf("mihomo-ui listening on %s (data=%s api=%s bin=%s)", addr, dataHome, mihomoURL, mihomoBin)
+		log.Printf("mihomo-ui listening on %s (data=%s bin=%s)", addr, dataHome, mihomoBin)
 		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Printf("http server error: %v", err)
 			sigCh <- syscall.SIGTERM

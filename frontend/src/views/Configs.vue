@@ -13,6 +13,7 @@ import {
   uploadConfig,
 } from '../api'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
+import { useMaskClose } from '../composables/useMaskClose'
 
 defineOptions({ name: 'Configs' })
 
@@ -46,6 +47,15 @@ const cfgDirty = computed(() => cfgContent.value !== cfgOriginal.value)
 
 const showDelete = ref(false)
 const deleteTarget = ref(null)
+
+// Backdrop clicks close these, but only when the press started on the backdrop
+// too — otherwise dragging a text selection out of the dialog would dismiss it.
+const formMask = useMaskClose(() => {
+  if (!busy.value) showForm.value = false
+})
+const editorMask = useMaskClose(() => {
+  showConfig.value = false
+})
 
 function setBusy(label = '', detail = '') {
   busy.value = true
@@ -481,7 +491,8 @@ onUnmounted(() => {
       <div
         v-if="showForm"
         class="modal-mask"
-        @click.self="!busy && (showForm = false)"
+        @mousedown="formMask.onMousedown"
+        @click="formMask.onClick"
       >
         <div class="modal">
           <h3>{{ editing ? '编辑' : '添加配置' }}</h3>
@@ -581,9 +592,9 @@ onUnmounted(() => {
       @confirm="confirmDelete"
       @cancel="cancelDelete"
     >
-      确认删除
+      确认删除配置
       <strong>{{ deleteTarget?.name }}</strong>
-      配置？
+      ？
     </ConfirmDialog>
 
     <!-- page-level busy for non-modal actions (switch / bulk refresh) -->
@@ -599,7 +610,12 @@ onUnmounted(() => {
 
     <!-- per-config original YAML editor -->
     <Transition name="modal-fade">
-      <div v-if="showConfig" class="modal-mask modal-mask-full" @click.self="showConfig = false">
+      <div
+        v-if="showConfig"
+        class="modal-mask modal-mask-full"
+        @mousedown="editorMask.onMousedown"
+        @click="editorMask.onClick"
+      >
         <div class="modal modal-editor">
           <div class="modal-editor-head">
             <h3 class="modal-editor-title">编辑配置 · {{ cfgName }}</h3>

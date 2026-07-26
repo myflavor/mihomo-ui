@@ -18,8 +18,8 @@ type sessionStore struct {
 	ttl     time.Duration
 }
 
-func newSessionStore(ttl time.Duration) *sessionStore {
-	return &sessionStore{expires: make(map[string]time.Time), ttl: ttl}
+func newSessionStore() *sessionStore {
+	return &sessionStore{expires: make(map[string]time.Time), ttl: sessionTTL}
 }
 
 // issue mints a token. Callers must verify the password first.

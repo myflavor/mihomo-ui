@@ -7,17 +7,15 @@ import (
 	"github.com/xin/mihomo-ui/internal/configsvc"
 	"github.com/xin/mihomo-ui/internal/mihomo"
 	"github.com/xin/mihomo-ui/internal/store"
+	"github.com/xin/mihomo-ui/internal/web"
 )
 
 type Server struct {
 	Mihomo     *mihomo.Client
-	MihomoURL  string
-	Secret     string
 	Store      *store.Store
 	UIPassword string
 	ConfigPath string
 	ConfigDir  string
-	StaticDir  string
 
 	// Config owns mihomo/config.yaml; handlers must never write it themselves.
 	Config *configsvc.Service
@@ -26,7 +24,7 @@ type Server struct {
 }
 
 func (s *Server) Routes() http.Handler {
-	s.sessions = newSessionStore(sessionTTL)
+	s.sessions = newSessionStore()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/health", s.handleHealth)
 	mux.HandleFunc("/api/overview", s.handleOverview)
@@ -52,9 +50,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/api/logout", s.handleLogout)
 	mux.HandleFunc("/api/auth/check", s.handleAuthCheck)
 
-	if s.StaticDir != "" {
-		mux.Handle("/", spaHandler(s.StaticDir))
-	}
+	mux.Handle("/", web.Handler())
 	// We serve the SPA ourselves, so everything is same-origin: no CORS headers.
 	return s.withAuth(mux)
 }
@@ -71,36 +67,11 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if s.UIPassword == "" {
-			next.ServeHTTP(w, r)
-			return
-		}
 		if !s.authorized(r) {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="mihomo-ui"`)
 			writeJSON(w, 401, map[string]string{"error": "unauthorized"})
 			return
 		}
 		next.ServeHTTP(w, r)
-	})
-}
-
-// spaHandler serves the frontend, falling back to index.html for client routes.
-func spaHandler(dir string) http.Handler {
-	root := http.Dir(dir)
-	files := http.FileServer(root)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/api/") {
-			http.NotFound(w, r)
-			return
-		}
-		if r.URL.Path != "/" {
-			f, err := root.Open(strings.TrimPrefix(r.URL.Path, "/"))
-			if err != nil {
-				http.ServeFile(w, r, dir+"/index.html")
-				return
-			}
-			_ = f.Close()
-		}
-		files.ServeHTTP(w, r)
 	})
 }

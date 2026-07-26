@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -31,7 +32,10 @@ type Service struct {
 	ConfigPath string // mihomo/config.yaml
 	BasePath   string // ui/base.yaml
 	ConfigDir  string // ui/config
-	Secret     string // MIHOMO_SECRET
+	Secret     string // kernel API credential, generated per boot
+	KernelAPI  string // host:port the kernel's control API is pinned to
+	ProxyHost  string // bind-address for the proxy port
+	ProxyPort  int    // proxy port; 0 means do not open one
 	Store      *store.Store
 	Kernel     Reloader
 
@@ -43,6 +47,9 @@ func (s *Service) installOpts() configgen.InstallOptions {
 		BasePath:  s.BasePath,
 		ConfigDir: s.ConfigDir,
 		Secret:    s.Secret,
+		KernelAPI: s.KernelAPI,
+		ProxyHost: s.ProxyHost,
+		ProxyPort: s.ProxyPort,
 		UI:        configgen.UIStateFromPrefs(s.Store.Prefs()),
 	}
 }
@@ -111,19 +118,16 @@ func (s *Service) dropIfDeleted(id string) {
 }
 
 // ApplyActive installs the store's active config, or a bootable empty shell.
-func (s *Service) ApplyActive(forceRefresh bool) (*configgen.ApplyResult, error) {
-	// Download outside the lock, for the same reason as Activate. Skipped when
-	// forceRefresh already re-fetches, and a no-op when the raw file is present.
-	if !forceRefresh {
-		if active, ok := s.Store.Active(); ok {
-			if _, err := s.EnsureRaw(active, false); err != nil {
-				return nil, err
-			}
+func (s *Service) ApplyActive() (*configgen.ApplyResult, error) {
+	// Fetch outside the lock, for the same reasons as Activate.
+	if active, ok := s.Store.Active(); ok {
+		if _, err := s.EnsureRaw(active, false); err != nil {
+			return nil, err
 		}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	res, err := configgen.ApplyConfigsDetailed(s.ConfigPath, s.Store.ActiveList(), forceRefresh, s.installOpts())
+	res, err := configgen.ApplyConfigsDetailed(s.ConfigPath, s.Store.ActiveList(), false, s.installOpts())
 	if err != nil {
 		return res, err
 	}
@@ -132,26 +136,90 @@ func (s *Service) ApplyActive(forceRefresh bool) (*configgen.ApplyResult, error)
 
 // Activate flips the active flag and installs it in one lock hold; splitting
 // them lets concurrent activations desync settings.yaml from config.yaml.
-func (s *Service) Activate(id string) (store.Config, *configgen.ApplyResult, error) {
+// forceRefresh re-downloads the raw file first, outside the lock.
+func (s *Service) Activate(id string, forceRefresh bool) (store.Config, *configgen.ApplyResult, error) {
 	cur, err := s.Store.Get(id)
 	if err != nil {
 		return store.Config{}, nil, fmt.Errorf("%w: %v", ErrNoSuchConfig, err)
 	}
-	// Pull a missing raw file in first. installLocked would otherwise fetch it
-	// lazily under the lock, stalling the whole panel for the download timeout.
-	pre, err := s.EnsureRaw(cur, false)
+	// Before the lock for two reasons: installing would otherwise fetch a missing
+	// file while holding it and stall the panel, and this parse is the only check
+	// standing between an unusable config and SetActive marking it active.
+	pre, err := s.EnsureRaw(cur, forceRefresh)
 	if err != nil {
 		return store.Config{}, pre, err
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	previous, hadPrevious := s.Store.Active()
 	cfg, err := s.Store.SetActive(id)
 	if err != nil {
 		return cfg, pre, fmt.Errorf("%w: %v", ErrNoSuchConfig, err)
 	}
 	res, err := s.installLocked(cfg)
+	if err != nil {
+		// The kernel refused this config — it is still running the old one, so
+		// leaving the flag flipped would have the panel and settings.yaml claim a
+		// config that was never loaded. Put the pointer back where it was.
+		s.restoreActive(previous, hadPrevious)
+		return previous, mergeResult(pre, res), err
+	}
 	return cfg, mergeResult(pre, res), err
+}
+
+// restoreActive undoes a SetActive after the install it was paired with failed.
+// A failure here is not worth surfacing over the install error the caller is
+// already returning, but it does mean the two views have diverged, so say so.
+func (s *Service) restoreActive(previous store.Config, had bool) {
+	var err error
+	if had {
+		_, err = s.Store.SetActive(previous.ID)
+	} else {
+		err = s.Store.ClearActive()
+	}
+	if err != nil {
+		log.Printf("configsvc: could not restore the previous active config: %v", err)
+	}
+}
+
+// UpdateMeta changes a config's stored fields and, for a subscription, pulls the
+// new URL before any of it is committed. Downloading first is what makes an edit
+// atomic: a bad URL leaves the entry exactly as it was instead of persisting a
+// name and address whose content was never fetched.
+func (s *Service) UpdateMeta(id string, patch store.ConfigPatch) (store.Config, *configgen.ApplyResult, error) {
+	cur, err := s.Store.Get(id)
+	if err != nil {
+		return store.Config{}, nil, fmt.Errorf("%w: %v", ErrNoSuchConfig, err)
+	}
+
+	// Probe with the patch applied but not yet saved, so the fetch uses the new
+	// URL while the store still holds the old one.
+	probe := cur
+	if patch.URL != nil {
+		probe.URL = *patch.URL
+	}
+	if patch.Source != nil {
+		probe.Source = *patch.Source
+	}
+	var res *configgen.ApplyResult
+	if probe.Source != "file" && probe.URL != "" {
+		if res, err = s.EnsureRaw(probe, true); err != nil {
+			return cur, res, err
+		}
+	}
+
+	cfg, err := s.Store.Update(id, patch)
+	if err != nil {
+		return cur, res, fmt.Errorf("%w: %v", ErrNoSuchConfig, err)
+	}
+	if !cfg.Active {
+		return cfg, res, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	install, err := s.installLocked(cfg)
+	return cfg, mergeResult(res, install), err
 }
 
 // Refresh re-downloads cfg's raw file and reinstalls it if still active.
@@ -171,29 +239,6 @@ func (s *Service) Refresh(cfg store.Config, forceRefresh bool) (*configgen.Apply
 	}
 	install, err := s.installLocked(cur)
 	return mergeResult(res, install), err
-}
-
-// ActivateWithRefresh is Activate preceded by a re-download, which stays outside
-// the lock; only SetActive and the install are held together.
-func (s *Service) ActivateWithRefresh(id string, forceRefresh bool) (store.Config, *configgen.ApplyResult, error) {
-	var cfg store.Config
-	cur, err := s.Store.Get(id)
-	if err != nil {
-		return cfg, nil, fmt.Errorf("%w: %v", ErrNoSuchConfig, err)
-	}
-	res, err := s.EnsureRaw(cur, forceRefresh)
-	if err != nil {
-		return cfg, res, err
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	cfg, err = s.Store.SetActive(id)
-	if err != nil {
-		return cfg, res, fmt.Errorf("%w: %v", ErrNoSuchConfig, err)
-	}
-	install, err := s.installLocked(cfg)
-	return cfg, mergeResult(res, install), err
 }
 
 // PatchRuntime persists mode/log-level/tun so they survive a reload or switch.

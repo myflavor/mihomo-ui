@@ -1,0 +1,3 @@
+Placeholder so //go:embed has a directory to find in a fresh checkout.
+Run `npm run build` in frontend/ and copy dist/ here before `go build`;
+the Dockerfile does this automatically.

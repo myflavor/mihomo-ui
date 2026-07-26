@@ -19,7 +19,6 @@ const leaving = ref(false)
 const askLogout = ref(false)
 let trafficRetryTimer = null
 let trafficBackoffMs = 1000
-let trafficStopped = false
 
 const modes = [
   { key: 'rule', label: '规则' },
@@ -94,7 +93,6 @@ async function toggleTun() {
 // Note this restores the data, not the feedback: unlike Logs there is still no
 // status badge here, so during a retry the numbers just sit at their last value.
 function scheduleTrafficReconnect() {
-  if (trafficStopped) return
   if (trafficRetryTimer) clearTimeout(trafficRetryTimer)
   const wait = trafficBackoffMs
   trafficBackoffMs = Math.min(trafficBackoffMs * 1.8, 15000)
@@ -106,7 +104,6 @@ function scheduleTrafficReconnect() {
 
 function startTraffic() {
   stopTraffic()
-  trafficStopped = false
   const ctrl = new AbortController()
   trafficCtrl = ctrl
   trafficBuf = ''
@@ -118,7 +115,10 @@ function startTraffic() {
       })
       if (res.status === 401) {
         // Retrying with a dead token would loop forever; hand off to login.
-        trafficStopped = true
+        // Guarded like every other exit here: a newer stream may already have
+        // replaced this one, and tearing that down would kill a healthy stream.
+        if (trafficCtrl !== ctrl) return
+        stopTraffic()
         authFailed()
         return
       }
@@ -178,7 +178,6 @@ async function doLogout() {
 }
 
 function stopTraffic() {
-  trafficStopped = true
   if (trafficRetryTimer) {
     clearTimeout(trafficRetryTimer)
     trafficRetryTimer = null
@@ -300,7 +299,7 @@ onUnmounted(stopLive)
       @confirm="doLogout"
       @cancel="askLogout = false"
     >
-      确认退出登录 mihomo？
+      确认退出登录？
     </ConfirmDialog>
   </div>
 </template>
