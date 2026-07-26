@@ -30,8 +30,6 @@ const tunOn = computed(() => !!overview.value?.tun?.enable)
 const kernelVer = computed(() => overview.value?.version?.version || '—')
 const memText = computed(() => formatBytes(overview.value?.memory ?? 0))
 const connCount = computed(() => overview.value?.connections ?? 0)
-const activeName = computed(() => overview.value?.active?.name || '—')
-const mixedPort = computed(() => overview.value?.['mixed-port'] ?? '—')
 const logLevel = computed(() => overview.value?.['log-level'] || '—')
 
 function formatBytes(n) {
@@ -274,20 +272,12 @@ onUnmounted(stopLive)
       <div class="card-title">运行状态</div>
       <div class="stat-grid">
         <div class="stat">
-          <div class="k">当前配置</div>
-          <div class="v" style="font-size: 15px">{{ activeName }}</div>
-        </div>
-        <div class="stat">
-          <div class="k">日志级别</div>
-          <div class="v" style="font-size: 15px; text-transform: uppercase">{{ logLevel }}</div>
-        </div>
-        <div class="stat">
           <div class="k">内核版本</div>
           <div class="v" style="font-size: 15px">{{ kernelVer }}</div>
         </div>
         <div class="stat">
-          <div class="k">混合端口</div>
-          <div class="v">{{ mixedPort }}</div>
+          <div class="k">日志级别</div>
+          <div class="v" style="font-size: 15px; text-transform: uppercase">{{ logLevel }}</div>
         </div>
       </div>
     </div>

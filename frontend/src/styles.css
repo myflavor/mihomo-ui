@@ -22,7 +22,8 @@
   --radius-sm: 10px;
   --nav-h: 56px;
   --safe-b: env(safe-area-inset-bottom, 0px);
-  font-family: "MiSans", "PingFang SC", "HarmonyOS Sans SC", "Segoe UI", system-ui, sans-serif;
+  --font-sans: "MiSans", "PingFang SC", "HarmonyOS Sans SC", "Segoe UI", system-ui, sans-serif;
+  font-family: var(--font-sans);
   color: var(--text);
   background: var(--bg);
   line-height: 1.4;
@@ -991,6 +992,7 @@ a {
   color: var(--text-2);
   padding: 28px 12px;
   font-size: 14px;
+  font-family: var(--font-sans);
 }
 
 .group-tabs {

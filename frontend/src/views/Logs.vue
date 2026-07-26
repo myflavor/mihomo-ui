@@ -21,7 +21,7 @@ const levelRank = {
   silent: 4,
 }
 
-const level = ref('info')
+const level = ref(null)
 const lines = ref([])
 const paused = ref(false)
 const busy = ref(false)
