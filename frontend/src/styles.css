@@ -629,6 +629,14 @@ a {
   margin-bottom: 12px;
 }
 
+/* Toolbar card under a page title. Height follows its contents; only the
+   padding and spacing are shared, so tabs line up without padding out short rows. */
+.card-toolbar {
+  display: flex;
+  align-items: center;
+  padding: 12px 14px;
+}
+
 .card-title {
   font-size: 13px;
   color: var(--text-2);

@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onActivated, onDeactivated, onUnmounted, ref } from 'vue'
-import { authHeaders, getOverview, setMode, setTun } from '../api'
+import { authFailed, authHeaders, getOverview, logout, setMode, setTun } from '../api'
+import ConfirmDialog from '../components/ConfirmDialog.vue'
 
 defineOptions({ name: 'Home' })
 
@@ -14,6 +15,11 @@ const downTotal = ref(0)
 let pollTimer
 let trafficCtrl
 let trafficBuf = ''
+const leaving = ref(false)
+const askLogout = ref(false)
+let trafficRetryTimer = null
+let trafficBackoffMs = 1000
+let trafficStopped = false
 
 const modes = [
   { key: 'rule', label: '规则' },
@@ -84,8 +90,23 @@ async function toggleTun() {
   }
 }
 
+// Without this the rates freeze forever once a proxy drops the idle stream.
+// Note this restores the data, not the feedback: unlike Logs there is still no
+// status badge here, so during a retry the numbers just sit at their last value.
+function scheduleTrafficReconnect() {
+  if (trafficStopped) return
+  if (trafficRetryTimer) clearTimeout(trafficRetryTimer)
+  const wait = trafficBackoffMs
+  trafficBackoffMs = Math.min(trafficBackoffMs * 1.8, 15000)
+  trafficRetryTimer = setTimeout(() => {
+    trafficRetryTimer = null
+    startTraffic()
+  }, wait)
+}
+
 function startTraffic() {
   stopTraffic()
+  trafficStopped = false
   const ctrl = new AbortController()
   trafficCtrl = ctrl
   trafficBuf = ''
@@ -95,7 +116,16 @@ function startTraffic() {
         signal: ctrl.signal,
         headers: authHeaders({ Accept: 'application/x-ndjson' }),
       })
-      if (!res.ok || !res.body) return
+      if (res.status === 401) {
+        // Retrying with a dead token would loop forever; hand off to login.
+        trafficStopped = true
+        authFailed()
+        return
+      }
+      if (!res.ok || !res.body) {
+        if (trafficCtrl === ctrl) scheduleTrafficReconnect()
+        return
+      }
       const reader = res.body.getReader()
       const decoder = new TextDecoder()
       while (true) {
@@ -109,6 +139,10 @@ function startTraffic() {
           if (!line) continue
           try {
             const j = JSON.parse(line)
+            // Only a real data line proves the stream works: /api/traffic sends
+            // 200 before it dials mihomo, so res.ok alone would reset the
+            // backoff on every failed attempt and busy-loop the reconnect.
+            trafficBackoffMs = 1000
             if (j.up != null) up.value = j.up
             if (j.down != null) down.value = j.down
             if (j.upTotal != null) upTotal.value = j.upTotal
@@ -118,15 +152,37 @@ function startTraffic() {
           }
         }
       }
+      // upstream closed the stream
+      if (trafficCtrl === ctrl) scheduleTrafficReconnect()
     } catch (e) {
-      if (e.name !== 'AbortError') {
-        // silent
-      }
+      if (e.name !== 'AbortError' && trafficCtrl === ctrl) scheduleTrafficReconnect()
     }
   })()
 }
 
+// Logging out is rare but costs a password re-entry to undo, and the button
+// sits next to 刷新 — worth one tap of confirmation.
+async function doLogout() {
+  if (leaving.value) return
+  leaving.value = true
+  // Stop the polls and the stream first, so nothing fires a request against a
+  // token we are about to revoke and bounces the user through a spurious 401.
+  stopLive()
+  try {
+    await logout()
+    window.$toast?.('已退出登录')
+  } finally {
+    leaving.value = false
+    askLogout.value = false
+  }
+}
+
 function stopTraffic() {
+  trafficStopped = true
+  if (trafficRetryTimer) {
+    clearTimeout(trafficRetryTimer)
+    trafficRetryTimer = null
+  }
   if (trafficCtrl) {
     trafficCtrl.abort()
     trafficCtrl = null
@@ -159,6 +215,7 @@ onUnmounted(stopLive)
       <h1 class="page-title">首页</h1>
       <div class="page-actions">
         <button class="btn btn-ghost" :disabled="busy" @click="refresh">刷新</button>
+        <button class="btn btn-ghost" :disabled="leaving" @click="askLogout = true">退出登录</button>
       </div>
     </div>
 
@@ -235,5 +292,15 @@ onUnmounted(stopLive)
         </div>
       </div>
     </div>
+
+
+    <ConfirmDialog
+      :open="askLogout"
+      :busy="leaving"
+      @confirm="doLogout"
+      @cancel="askLogout = false"
+    >
+      确认退出登录 mihomo？
+    </ConfirmDialog>
   </div>
 </template>

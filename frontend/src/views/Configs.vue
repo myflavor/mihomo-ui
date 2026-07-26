@@ -12,6 +12,7 @@ import {
   updateConfig,
   uploadConfig,
 } from '../api'
+import ConfirmDialog from '../components/ConfirmDialog.vue'
 
 defineOptions({ name: 'Configs' })
 
@@ -573,32 +574,17 @@ onUnmounted(() => {
     </Transition>
 
     <!-- delete confirm -->
-    <Transition name="modal-fade">
-      <div
-        v-if="showDelete"
-        class="modal-mask"
-        @click.self="cancelDelete"
-      >
-        <div class="modal modal-confirm">
-          <h3>删除配置</h3>
-          <p class="confirm-text">
-            确定删除
-            <strong>{{ deleteTarget?.name || '该配置' }}</strong>
-            ？此操作不可撤销。
-          </p>
-          <div class="modal-actions">
-            <button class="btn btn-ghost" :disabled="busy" @click="cancelDelete">取消</button>
-            <button class="btn btn-danger-solid" :disabled="busy" @click="confirmDelete">
-              <span v-if="busy" class="btn-inline-busy">
-                <span class="spin" aria-hidden="true" />
-                <span>删除</span>
-              </span>
-              <span v-else>删除</span>
-            </button>
-          </div>
-        </div>
-      </div>
-    </Transition>
+    <ConfirmDialog
+      :open="showDelete"
+      danger
+      :busy="busy"
+      @confirm="confirmDelete"
+      @cancel="cancelDelete"
+    >
+      确认删除
+      <strong>{{ deleteTarget?.name }}</strong>
+      配置？
+    </ConfirmDialog>
 
     <!-- page-level busy for non-modal actions (switch / bulk refresh) -->
     <Transition name="page-busy-fade">

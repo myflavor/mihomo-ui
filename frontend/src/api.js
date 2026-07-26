@@ -15,6 +15,15 @@ export function setToken(token) {
   }
 }
 
+// Streaming views use raw fetch instead of api(), so they need a way to run the
+// same expired-token handling: drop the token and let App.vue send us to /login.
+export function authFailed() {
+  setToken('')
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('ui-auth-required'))
+  }
+}
+
 export async function api(path, options = {}) {
   const { headers: extraHeaders, ...rest } = options
   const opts = {
@@ -40,10 +49,7 @@ export async function api(path, options = {}) {
     data = { raw: text }
   }
   if (res.status === 401) {
-    setToken('')
-    if (typeof window !== 'undefined') {
-      window.dispatchEvent(new CustomEvent('ui-auth-required'))
-    }
+    authFailed()
     throw new Error(data?.error || '需要登录')
   }
   if (!res.ok) {
@@ -55,6 +61,17 @@ export async function api(path, options = {}) {
 export const checkAuth = () => api('/api/auth/check')
 export const login = (password) =>
   api('/api/login', { method: 'POST', body: { password } })
+
+// Revokes the session server-side, then drops it locally and returns to login.
+// The local half runs even if the request fails — the token is going away here
+// either way, and a stale one left in storage would just 401 on the next call.
+export async function logout() {
+  try {
+    await api('/api/logout', { method: 'POST' })
+  } finally {
+    authFailed()
+  }
+}
 
 export const getOverview = () => api('/api/overview')
 export const setMode = (mode) => api('/api/mode', { method: 'POST', body: { mode } })

@@ -119,12 +119,29 @@ configs:
 | 变量 | 默认 | 说明 |
 |------|------|------|
 | `UI_ADDR` | `:7080` | 面板监听（host 网络下即本机端口） |
-| `UI_PASSWORD` | `mihomo-ui` | 面板登录密码 |
+| `UI_PASSWORD` | `mihomo-ui` | 面板登录密码，**公网可达时务必修改** |
 | `MIHOMO_SECRET` | `mihomo` | 内核 API 密钥（装载时强制覆盖） |
 | `MIHOMO_BIN` | `/mihomo` | 内核二进制路径 |
+| `MIHOMO_API` | `http://127.0.0.1:9090` | 内核控制 API 地址 |
+| `MIHOMO_PROXY` | `http://127.0.0.1:7890` | 下载订阅走的代理，`direct` 为直连 |
+| `STATIC_DIR` | `/app/web` | 前端静态文件目录 |
 | `TZ` | `Asia/Shanghai` | 时区 |
 
-代理端口改 `data/ui/base.yaml` 的 `mixed-port` 后，在面板重新装载当前配置即可。
+代理端口改 `data/ui/base.yaml` 的 `mixed-port` 后，在面板重新装载当前配置即可。注意订阅下载的代理回退地址固定为 `127.0.0.1:7890`，改了端口需同时设 `MIHOMO_PROXY`（否则会先失败一次再直连重试）。
+
+---
+
+## 鉴权
+
+登录后拿到的是**随机会话令牌**（有效期 7 天，每次使用顺延），密码本身不会存进浏览器。令牌只存在服务端内存里，重启面板即让所有登录失效。
+
+脚本调 API 也走同一条路——先登录换令牌：
+
+```bash
+TOKEN=$(curl -s -X POST http://127.0.0.1:7080/api/login \
+  -H 'Content-Type: application/json' -d '{"password":"你的密码"}' | jq -r .token)
+curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:7080/api/overview
+```
 
 ---
 

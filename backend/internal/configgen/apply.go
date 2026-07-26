@@ -84,7 +84,20 @@ func writeYAMLFile(path string, doc map[string]any) error {
 	return os.Rename(tmp, path)
 }
 
-// downloadHTTPClient prefers MIHOMO_PROXY / HTTP_PROXY, else local mixed-port.
+// WriteConfigFile stages then renames, so no reader sees a half-written file.
+func WriteConfigFile(path string, content []byte) error {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, content, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// downloadHTTPClient prefers MIHOMO_PROXY / HTTP_PROXY, else the default
+// mixed-port. Note this fallback is fixed at 7890 and does not follow a
+// mixed-port edited in base.yaml — set MIHOMO_PROXY when you change the port.
+// Callers retry directly if the proxy attempt fails, so a stale port only
+// costs one failed request.
 func downloadHTTPClient() *http.Client {
 	proxy := strings.TrimSpace(os.Getenv("MIHOMO_PROXY"))
 	if proxy == "" {
@@ -168,7 +181,29 @@ func SaveLocalConfig(configDir, id string, content []byte) error {
 	if doc == nil {
 		return fmt.Errorf("YAML 为空")
 	}
-	return os.WriteFile(LocalConfigPath(configDir, id), content, 0o644)
+	// Stage then rename, so a concurrent install reads either the old or the new
+	// file and never a half-written one. This is what lets downloads run without
+	// applyMu. The staging name must be unique per writer: two refreshes of the
+	// same id sharing one tmp file would truncate each other and publish a mix.
+	path := LocalConfigPath(configDir, id)
+	f, err := os.CreateTemp(configDir, id+".yaml.tmp-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp) // no-op once the rename below succeeds
+	if _, err := f.Write(content); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	// CreateTemp makes it 0600; match the 0644 the rest of the tree uses.
+	if err := os.Chmod(tmp, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // DeleteLocalConfig removes stored raw config file.

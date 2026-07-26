@@ -18,44 +18,56 @@ type Kernel struct {
 
 	cmd    *exec.Cmd
 	cancel context.CancelFunc
-	done   chan error
-	once   sync.Once
+	// exited closes when the child is reaped; waitErr holds why. Closing rather
+	// than sending lets Stop and the watchdog both see it, instead of racing.
+	exited  chan struct{}
+	waitErr error
+	once    sync.Once
 }
 
-// Start launches mihomo -d Home.
+// Start launches mihomo -d Home; on failure exited closes so Done never blocks.
 func (k *Kernel) Start() error {
+	k.exited = make(chan struct{})
+	fail := func(err error) error {
+		close(k.exited)
+		return err
+	}
 	if k.Bin == "" {
 		k.Bin = "mihomo"
 	}
 	if k.Home == "" {
-		return fmt.Errorf("mihomo home empty")
+		return fail(fmt.Errorf("mihomo home empty"))
 	}
 	if err := os.MkdirAll(k.Home, 0o755); err != nil {
-		return err
+		return fail(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	k.cancel = cancel
-	k.done = make(chan error, 1)
 	cmd := exec.CommandContext(ctx, k.Bin, "-d", k.Home)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
 		cancel()
-		return fmt.Errorf("start mihomo: %w", err)
+		return fail(fmt.Errorf("start mihomo: %w", err))
 	}
 	k.cmd = cmd
 	go func() {
-		err := cmd.Wait()
-		k.done <- err
+		k.waitErr = cmd.Wait()
+		close(k.exited)
 	}()
 	log.Printf("mihomo started pid=%d home=%s", cmd.Process.Pid, k.Home)
 	return nil
 }
 
-// Done is closed/sent when the mihomo process exits.
-func (k *Kernel) Done() <-chan error {
-	return k.done
+// Done is closed when the mihomo process exits. Safe for multiple waiters.
+func (k *Kernel) Done() <-chan struct{} {
+	return k.exited
+}
+
+// Err returns why mihomo exited. Only valid after Done is closed.
+func (k *Kernel) Err() error {
+	return k.waitErr
 }
 
 // WaitReady polls the external-controller until Version succeeds or timeout.
@@ -64,9 +76,9 @@ func (k *Kernel) WaitReady(client *Client, timeout time.Duration) error {
 	var last error
 	for time.Now().Before(deadline) {
 		select {
-		case err := <-k.done:
-			if err != nil {
-				return fmt.Errorf("mihomo exited early: %w", err)
+		case <-k.exited:
+			if k.waitErr != nil {
+				return fmt.Errorf("mihomo exited early: %w", k.waitErr)
 			}
 			return fmt.Errorf("mihomo exited early")
 		default:
@@ -92,10 +104,14 @@ func (k *Kernel) Stop() {
 		pid := k.cmd.Process.Pid
 		_ = syscall.Kill(-pid, syscall.SIGTERM)
 		select {
-		case <-k.done:
+		case <-k.exited:
 		case <-time.After(5 * time.Second):
 			_ = syscall.Kill(-pid, syscall.SIGKILL)
-			<-k.done
+			select {
+			case <-k.exited:
+			case <-time.After(5 * time.Second):
+				log.Printf("mihomo pid=%d still not reaped after SIGKILL", pid)
+			}
 		}
 		if k.cancel != nil {
 			k.cancel()

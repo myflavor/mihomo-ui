@@ -1,6 +1,6 @@
 <script setup>
 import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref } from 'vue'
-import { authHeaders, getOverview, setLogLevel } from '../api'
+import { authFailed, authHeaders, getOverview, setLogLevel } from '../api'
 
 defineOptions({ name: 'Logs' })
 
@@ -116,11 +116,17 @@ async function start() {
       signal: ctrl.signal,
       headers: authHeaders({ Accept: 'application/x-ndjson' }),
     })
+    if (res.status === 401) {
+      // Reconnecting with a dead token would loop forever; hand off to login.
+      stopped = true
+      status.value = 'error'
+      authFailed()
+      return
+    }
     if (!res.ok || !res.body) {
       throw new Error(res.statusText || '无法连接日志流')
     }
     status.value = 'live'
-    backoffMs = 1000
     const reader = res.body.getReader()
     const decoder = new TextDecoder()
     while (true) {
@@ -163,6 +169,10 @@ function pushLine(raw) {
     if (type === 'error' && typeof j.payload === 'string' && /upstream|log stream/i.test(j.payload)) {
       control = true
     }
+    // Only a kernel line proves the stream works — /api/logs commits 200 and a
+    // 'connected' preamble before it dials, so resetting earlier busy-loops the
+    // reconnect while the controller is down.
+    if (!control) backoffMs = 1000
     const p = j.payload || j.message || j.msg || raw
     payload = type ? `[${type}] ${p}` : String(p)
   } catch {
@@ -244,8 +254,8 @@ onUnmounted(stop)
       </div>
     </div>
 
-    <div class="card" style="padding: 12px 14px; margin-bottom: 10px">
-      <div class="row" style="flex-wrap: wrap; gap: 10px; align-items: center">
+    <div class="card card-toolbar">
+      <div class="row" style="flex-wrap: wrap; gap: 10px; align-items: center; width: 100%">
         <div class="pill-group">
           <button
             v-for="l in levels"

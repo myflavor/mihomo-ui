@@ -16,7 +16,10 @@ async function doLogin() {
   error.value = ''
   try {
     const res = await login(password.value)
-    setToken(res.token || password.value)
+    // res.auth === false means the panel runs without a password and issues no
+    // token. Otherwise store the session token — never the password itself.
+    if (res.auth !== false && !res.token) throw new Error('服务端未返回会话令牌')
+    setToken(res.token || '')
     await router.replace('/')
     window.dispatchEvent(new CustomEvent('ui-auth-ok'))
   } catch (e) {

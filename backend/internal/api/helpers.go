@@ -2,91 +2,75 @@ package api
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/xin/mihomo-ui/internal/configgen"
 	"github.com/xin/mihomo-ui/internal/store"
 )
 
-const applyTimeout = 90 * time.Second
+// errMethod is the body every handler returns for a verb it does not implement.
+var errMethod = errors.New("method not allowed")
 
-func (s *Server) withApplyLock(fn func() error) error {
-	s.applyMu.Lock()
-	defer s.applyMu.Unlock()
-	return fn()
+func writeJSON(w http.ResponseWriter, code int, v any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(v)
 }
 
-func applyContext() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), applyTimeout)
+func writeErr(w http.ResponseWriter, code int, err error) {
+	writeJSON(w, code, map[string]string{"error": err.Error()})
 }
 
-// applyAndReload installs the active config into config.yaml and hot-reloads.
-// forceRefresh re-downloads URL raw then installs.
-func (s *Server) applyAndReload(forceRefresh bool) (*configgen.ApplyResult, error) {
-	var res *configgen.ApplyResult
-	err := s.withApplyLock(func() error {
-		var e error
-		res, e = configgen.ApplyConfigsDetailed(s.ConfigPath, s.Store.ActiveList(), forceRefresh, s.installOpts())
-		if e != nil {
-			return e
-		}
-		ctx, cancel := applyContext()
-		defer cancel()
-		return s.Mihomo.ReloadConfig(ctx, s.ConfigPath)
-	})
-	return res, err
+// isWriteMethod accepts the setter verbs interchangeably; the frontend uses POST.
+func isWriteMethod(r *http.Request) bool {
+	switch r.Method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch:
+		return true
+	}
+	return false
 }
 
-// installActiveAndReload merges base ⊕ raw cfg ⊕ settings ⊕ secret and hot-reloads.
-func (s *Server) installActiveAndReload(cfg store.Config) (*configgen.ApplyResult, error) {
-	var res *configgen.ApplyResult
-	err := s.withApplyLock(func() error {
-		var e error
-		res, e = configgen.InstallActive(s.ConfigPath, cfg, s.installOpts())
-		if e != nil {
-			return e
-		}
-		ctx, cancel := applyContext()
-		defer cancel()
-		return s.Mihomo.ReloadConfig(ctx, s.ConfigPath)
-	})
-	return res, err
+// contentBody is what both YAML editors submit; only the kernel one sets Reload.
+type contentBody struct {
+	Content string `json:"content"`
+	Reload  *bool  `json:"reload"`
 }
 
-// refreshConfigAndMaybeInstall ensures raw (optional re-download); if active, install+reload.
-// Whole ensure → install → reload path is serialized under applyMu.
-func (s *Server) refreshConfigAndMaybeInstall(cfg store.Config, forceRefresh bool) (*configgen.ApplyResult, error) {
-	var res *configgen.ApplyResult
-	err := s.withApplyLock(func() error {
-		var e error
-		res, e = configgen.EnsureConfig(s.ConfigDir, cfg, forceRefresh)
-		if e != nil {
-			return e
+// readContentBody takes the JSON envelope or a bare YAML document. It reads the
+// body whole first, since a Decoder buffers ahead and leaves nothing to re-read.
+func readContentBody(r *http.Request) (contentBody, error) {
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
+		return contentBody{}, err
+	}
+	var body contentBody
+	if json.Unmarshal(raw, &body) != nil {
+		return contentBody{Content: string(raw)}, nil
+	}
+	return body, nil
+}
+
+// materializeConfigRaw puts raw YAML on disk, inline content winning over a
+// fetch. Runs outside the config.yaml lock — see configsvc.
+func (s *Server) materializeConfigRaw(cfg store.Config, content []byte, source, urlStr string) (*configgen.ApplyResult, error) {
+	if len(content) > 0 {
+		return nil, s.Config.SaveRaw(cfg, content)
+	}
+	if source != "file" && urlStr != "" {
+		if err := s.Config.FetchRaw(cfg); err != nil {
+			return nil, err
 		}
-		if !cfg.Active {
-			return nil
+		// Fetch already wrote the file; only ensure when something is still missing.
+		if configgen.HasLocalConfig(s.ConfigDir, cfg.ID) {
+			return nil, nil
 		}
-		ir, e := configgen.InstallActive(s.ConfigPath, cfg, s.installOpts())
-		if ir != nil {
-			if res == nil {
-				res = ir
-			} else {
-				res.OK = ir.OK
-				res.Failed = append(res.Failed, ir.Failed...)
-				res.Warnings = append(res.Warnings, ir.Warnings...)
-			}
-		}
-		if e != nil {
-			return e
-		}
-		ctx, cancel := applyContext()
-		defer cancel()
-		return s.Mihomo.ReloadConfig(ctx, s.ConfigPath)
-	})
-	return res, err
+	}
+	return s.Config.EnsureRaw(cfg, false)
 }
 
 // updateAllProviders refreshes non-Compatible mihomo proxy providers.
@@ -123,40 +107,11 @@ func writeConfigApply(w http.ResponseWriter, code int, cfg store.Config, res *co
 	})
 }
 
+// parseIntervalForm reads minutes; absent, malformed and negative all mean off.
 func parseIntervalForm(v string) int {
-	v = strings.TrimSpace(v)
-	if v == "" {
-		return 0
-	}
-	n, err := strconv.Atoi(v)
+	n, err := strconv.Atoi(strings.TrimSpace(v))
 	if err != nil || n < 0 {
 		return 0
 	}
 	return n
-}
-
-// materializeConfigRaw ensures raw YAML is on disk for cfg.
-// Non-empty content is saved as local file; otherwise URL sources are fetched.
-// Disk write/download is serialized under applyMu so concurrent create/refresh
-// cannot interleave with install+reload.
-func (s *Server) materializeConfigRaw(cfg store.Config, content []byte, source, urlStr string) (*configgen.ApplyResult, error) {
-	var res *configgen.ApplyResult
-	err := s.withApplyLock(func() error {
-		if len(content) > 0 {
-			return configgen.SaveLocalConfig(s.ConfigDir, cfg.ID, content)
-		}
-		if source != "file" && urlStr != "" {
-			if _, e := configgen.FetchAndSaveConfig(s.ConfigDir, cfg); e != nil {
-				return e
-			}
-			// Fetch already wrote the file; only ensure when something still missing.
-			if configgen.HasLocalConfig(s.ConfigDir, cfg.ID) {
-				return nil
-			}
-		}
-		var e error
-		res, e = configgen.EnsureConfig(s.ConfigDir, cfg, false)
-		return e
-	})
-	return res, err
 }

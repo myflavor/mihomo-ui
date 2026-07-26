@@ -91,7 +91,7 @@ onUnmounted(stopLive)
       </div>
     </div>
 
-    <div class="card" style="padding: 12px 14px">
+    <div class="card card-toolbar">
       <div class="conn-summary">
         <span>当前 {{ count }}</span>
         <span>↑ {{ formatBytes(upTotal) }}</span>
