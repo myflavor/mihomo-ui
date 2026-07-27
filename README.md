@@ -76,7 +76,7 @@ docker compose up -d
 ## 配置如何生效
 
 ```text
-mihomo/config.yaml = 当前配置 ⊕ override.yaml ⊕ settings 开关 ⊕ 系统强制
+mihomo/config.yaml = 当前配置 <- override.yaml <- settings 开关 <- 系统强制
 ```
 
 ```text
