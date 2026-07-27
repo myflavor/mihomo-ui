@@ -49,17 +49,7 @@ docker compose up -d
 
 登录面板后在「配置」页添加订阅或上传 YAML，点卡片激活即生效。
 
----
-
-## 面板
-
-| 页 | 功能 |
-|----|------|
-| **首页** | 流量、模式（规则 / 全局 / 直连）、TUN、运行状态 |
-| **节点** | 策略组切换、选节点、测速 |
-| **配置** | 添加 URL / 上传 YAML；点卡片切换当前；菜单：更新 / 编辑 / 原始配置 / 删除 |
-| **连接** | 实时连接，单条或全部关闭 |
-| **日志** | 级别（Debug / Info / Warning / Error）与实时流 |
+> WSL 下开启 TUN 可能与 Windows 冲突，按需使用。
 
 ---
 
@@ -92,26 +82,11 @@ docker compose up -d
 mihomo/config.yaml = 当前配置 ⊕ override.yaml ⊕ settings 开关 ⊕ 系统强制
 ```
 
-- **当前配置**：订阅或上传的 YAML，同一时刻只有一个，切换即生效
-- **override.yaml**：运维者底线，覆盖订阅同名项（DNS、TUN 参数、allow-lan 等）；订阅独有的 proxies/rules 原样透传。首次从内置模板生成，之后不覆盖用户编辑
-- **settings 开关**：模式 / 日志级别 / TUN，写在 `settings.yaml`，换配置后仍保留
-- **系统强制**（不可被任何配置覆盖）：`external-controller`(`MIHOMO_API`)、`secret`(`MIHOMO_SECRET`)、`profile.store-selected`/`store-fake-ip`(`= true`)
-
-数据目录（`./data` -> `/data/mihomo-ui`）：
-
 ```text
 data/
   mihomo/config.yaml      # 内核运行配置（合并结果）
   ui/
-    override.yaml         # 运维者底线（首次从模板生成，之后不覆盖）
+    override.yaml         # 运维者底线（覆盖订阅，首次从模板生成，之后不覆盖用户编辑）
     settings.yaml         # 面板开关 + 配置列表
     config/<id>.yaml      # 各配置原始内容
 ```
-
----
-
-## TUN
-
-默认关闭（`settings.yaml` 里 `tun-enable: false`）。开启需 `NET_ADMIN` 与 `/dev/net/tun`（上方启动命令已含）。
-
-> WSL 下可能与 Windows 自身 TUN 冲突，按需使用，不建议常开。
