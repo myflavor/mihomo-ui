@@ -43,11 +43,11 @@ docker compose up -d
 
 | 入口 | 地址 | 说明 |
 |------|------|------|
-| 面板 | http://127.0.0.1:7080 | 密码默认 `mihomo-ui` |
+| 面板 | http://127.0.0.1:7080 | 密码即 `UI_PASSWORD` |
 | 代理 | `127.0.0.1:7890` | mixed-port（HTTP / SOCKS5），来自订阅 |
-| 内核 API | `127.0.0.1:9090` | 地址可用 `MIHOMO_API` 改；密钥默认每次启动随机 |
+| 内核 API | `127.0.0.1:9090` | 面板连内核用，一般不直接访问 |
 
-代理端口默认只对本机开放（`allow-lan: false`）；端口来自订阅或 `override.yaml` 的 `mixed-port`，只走 TUN 的话两者都不设即可。
+登录面板后在「配置」页添加订阅或上传 YAML，点卡片激活即生效。
 
 ---
 
@@ -60,53 +60,6 @@ docker compose up -d
 | **配置** | 添加 URL / 上传 YAML；点卡片切换当前；菜单：更新 / 编辑 / 原始配置 / 删除 |
 | **连接** | 实时连接，单条或全部关闭 |
 | **日志** | 级别（Debug / Info / Warning / Error）与实时流 |
-
----
-
-## 配置如何生效
-
-装载公式：
-
-```text
-mihomo/config.yaml = 当前配置 ⊕ override.yaml ⊕ settings 开关 ⊕ 系统强制（密钥 / API / profile）
-```
-
-- 同一时刻只有一个**当前配置**，切换即生效
-- 配置尽量原样交给内核（含 `proxy-providers` / `rule-providers` / `rules`）
-- 模式 / 日志级别 / TUN 写在 `settings.yaml`，换配置后仍保留
-- `override.yaml` 是运维者底线，覆盖订阅同名项（DNS、TUN 参数、allow-lan 等），不放节点/规则
-- 内核 API 地址与密钥由环境变量强制写入，`profile.store-selected` / `store-fake-ip` 由代码强制，写进 `override.yaml` 或订阅里都不生效
-
-数据目录（`./data` → `/data/mihomo-ui`）：
-
-```text
-data/
-  mihomo/
-    config.yaml          # 内核运行配置（合并结果）
-  ui/
-    override.yaml        # 运维者底线（首次从内置模板生成，之后不覆盖）
-    settings.yaml        # 面板开关 + 配置列表
-    config/<id>.yaml     # 各配置原始内容
-```
-
-`settings.yaml` 示例：
-
-```yaml
-mode: rule
-log-level: info
-tun-enable: false
-configId: <uuid>
-configs:
-  - id: <uuid>
-    name: example
-    url: https://...
-    source: url
-    interval: 0
-    updatedAt: "2026-07-16 16:17:28"
-    createdAt: "2026-07-16 16:13:17"
-```
-
-进程：容器入口是 `mihomo-ui`，由它拉起内核 `mihomo -d …/mihomo`。
 
 ---
 
@@ -124,26 +77,35 @@ configs:
 
 常规使用只需设 `UI_PASSWORD`，其余都有可用默认值。
 
-- **`UI_LISTEN` 与 `MIHOMO_API` 都是 `host:port`**，格式不对启动即报错并指明是哪个变量
-- **代理端口由订阅或 `override.yaml` 的 `mixed-port` 决定**：不再用环境变量强制；监听非回环地址还需在 `override.yaml` 开 `allow-lan`
-- **`MIHOMO_API` 撞端口时改它**：9090 被占（Prometheus 等）会导致启动失败，日志会直说
-- **`MIHOMO_SECRET` 不设则每次启动随机**，要用别的客户端连内核 API 时才需固定，也可从 `data/mihomo/config.yaml` 的 `secret` 读到
-- **面板下载订阅走标准 `HTTP_PROXY` / `HTTPS_PROXY`**（`http.ProxyFromEnvironment`），不设则直连，不会自动走内核代理端口
-- 前端已编译进二进制，路径默认相对当前目录，直接跑 `./mihomo-ui` 即可；镜像在 ENV 里覆盖成绝对路径
+- `UI_LISTEN` 与 `MIHOMO_API` 都是 `host:port`，格式不对启动即报错并指明是哪个变量
+- `MIHOMO_API` 撞端口时改它：9090 被占（Prometheus 等）会导致启动失败，日志会直说
+- `MIHOMO_SECRET` 不设则每次启动随机，可从 `data/mihomo/config.yaml` 的 `secret` 读到
+- 代理端口（`mixed-port`）由订阅或 `override.yaml` 决定，不再用环境变量强制
+- 面板下载订阅走标准 `HTTP_PROXY` / `HTTPS_PROXY`（`http.ProxyFromEnvironment`），不设则直连
 - 旧名 `MIHOMO_LISTEN` / `PROXY_LISTEN` / `MIHOMO_PROXY` 已移除，设了会拒绝启动并说明
 
 ---
 
-## 鉴权
+## 配置如何生效
 
-登录后拿到的是**随机会话令牌**（有效期 7 天，每次使用顺延），密码本身不会存进浏览器。令牌只存在服务端内存里，重启面板即让所有登录失效。
+```text
+mihomo/config.yaml = 当前配置 ⊕ override.yaml ⊕ settings 开关 ⊕ 系统强制
+```
 
-脚本调 API 也走同一条路——先登录换令牌：
+- **当前配置**：订阅或上传的 YAML，同一时刻只有一个，切换即生效
+- **override.yaml**：运维者底线，覆盖订阅同名项（DNS、TUN 参数、allow-lan 等）；订阅独有的 proxies/rules 原样透传。首次从内置模板生成，之后不覆盖用户编辑
+- **settings 开关**：模式 / 日志级别 / TUN，写在 `settings.yaml`，换配置后仍保留
+- **系统强制**（不可被任何配置覆盖）：`external-controller`(`MIHOMO_API`)、`secret`(`MIHOMO_SECRET`)、`profile.store-selected`/`store-fake-ip`(`= true`)
 
-```bash
-TOKEN=$(curl -s -X POST http://127.0.0.1:7080/api/login \
-  -H 'Content-Type: application/json' -d '{"password":"你的密码"}' | jq -r .token)
-curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:7080/api/overview
+数据目录（`./data` -> `/data/mihomo-ui`）：
+
+```text
+data/
+  mihomo/config.yaml      # 内核运行配置（合并结果）
+  ui/
+    override.yaml         # 运维者底线（首次从模板生成，之后不覆盖）
+    settings.yaml         # 面板开关 + 配置列表
+    config/<id>.yaml      # 各配置原始内容
 ```
 
 ---
