@@ -1,8 +1,3 @@
-# override.yaml - 运维者底线，覆盖订阅同名项；订阅独有项原样透传。
-# mode / log-level / tun.enable 由面板 settings 控制，不写这里。
-# profile.store-selected / store-fake-ip 由代码强制 = true，不写这里。
-# 代理端口(mixed-port 等)由订阅决定；这里只钉安全底线(allow-lan / bind-address)。
-
 allow-lan: false
 bind-address: 127.0.0.1
 
