@@ -81,9 +81,9 @@ mihomo/config.yaml = 当前配置 ⊕ override.yaml ⊕ settings 开关 ⊕ 系�
 
 ```text
 data/
-  mihomo/config.yaml      # 内核运行配置（合并结果）
+  mihomo/config.yaml      # 最终配置
   ui/
-    override.yaml         # 运维者底线（覆盖订阅，首次从模板生成，之后不覆盖用户编辑）
-    settings.yaml         # 面板开关 + 配置列表
+    override.yaml         # 覆盖配置
+    settings.yaml         # 面板配置
     config/<id>.yaml      # 各配置原始内容
 ```
