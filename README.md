@@ -12,7 +12,6 @@
 docker run -d --name mihomo-ui \
   --network host --cap-add NET_ADMIN \
   --device /dev/net/tun:/dev/net/tun \
-  -e TZ=Asia/Shanghai \
   -e UI_LISTEN=0.0.0.0:7080 \
   -e UI_PASSWORD=mihomo-ui \
   -v "$PWD/data:/data/mihomo-ui" \
@@ -32,7 +31,6 @@ services:
     devices:
       - /dev/net/tun:/dev/net/tun
     environment:
-      - TZ=Asia/Shanghai
       - UI_LISTEN=0.0.0.0:7080
       - UI_PASSWORD=mihomo-ui
     volumes:
