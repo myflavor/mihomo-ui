@@ -351,13 +351,6 @@ func writeMergedConfig(configPath string, cfgDoc map[string]any, opts InstallOpt
 	if opts.Secret != "" {
 		root["secret"] = opts.Secret
 	}
-	// ensure cors block for browser panel if missing
-	if _, ok := root["external-controller-cors"]; !ok {
-		root["external-controller-cors"] = map[string]any{
-			"allow-origins":         []any{"*"},
-			"allow-private-network": true,
-		}
-	}
 	return writeYAMLFile(configPath, root)
 }
 
