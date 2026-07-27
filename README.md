@@ -70,9 +70,8 @@ docker compose up -d
 - `UI_LISTEN` 与 `MIHOMO_API` 都是 `host:port`，格式不对启动即报错并指明是哪个变量
 - `MIHOMO_API` 撞端口时改它：9090 被占（Prometheus 等）会导致启动失败，日志会直说
 - `MIHOMO_SECRET` 不设则每次启动随机，可从 `data/mihomo/config.yaml` 的 `secret` 读到
-- 代理端口（`mixed-port`）由订阅或 `override.yaml` 决定，不再用环境变量强制
-- 面板下载订阅走标准 `HTTP_PROXY` / `HTTPS_PROXY`（`http.ProxyFromEnvironment`），不设则直连
-- 旧名 `MIHOMO_LISTEN` / `PROXY_LISTEN` / `MIHOMO_PROXY` 已移除，设了会拒绝启动并说明
+- 代理端口（`mixed-port`）由订阅或 `override.yaml` 决定
+- 面板下载订阅走标准 `HTTP_PROXY` / `HTTPS_PROXY`，不设则直连
 
 ---
 
