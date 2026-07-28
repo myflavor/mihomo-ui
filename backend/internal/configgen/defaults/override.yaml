@@ -9,8 +9,6 @@ tun:
   dns-hijack:
     - any:53
     - tcp://any:53
-  route-exclude-address:
-    - 192.168.0.0/16
 
 dns:
   enable: true
