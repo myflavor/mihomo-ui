@@ -995,43 +995,109 @@ a {
   font-family: var(--font-sans);
 }
 
-.group-tabs {
+/* group picker: a settings-style card row -> modal (replaces the old tab strip) */
+.group-pick-card {
+  cursor: pointer;
+  transition: transform 0.15s ease;
+}
+
+.group-pick-card:active {
+  transform: scale(0.995);
+}
+
+.group-pick-card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.group-pick-value {
   display: flex;
-  gap: 8px;
-  overflow-x: auto;
-  padding-bottom: 4px;
-  margin-bottom: 12px;
-  scrollbar-width: none;
-}
-
-.group-tabs::-webkit-scrollbar {
-  display: none;
-}
-
-.group-tab {
-  flex-shrink: 0;
-  display: inline-flex;
   align-items: center;
-  justify-content: center;
-  height: 34px;
-  padding: 0 16px;
-  border-radius: 999px;
-  background: var(--surface);
-  box-shadow: var(--shadow);
-  font-size: 13px;
+  gap: 6px;
+  min-width: 0;
+}
+
+.group-pick-name {
+  font-size: 15px;
   font-weight: 500;
-  color: var(--text-2);
-  line-height: 1;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.group-tab.active {
-  background: var(--accent);
-  color: #fff;
+.group-pick-value .chev {
+  color: var(--text-2);
+  flex-shrink: 0;
 }
 
-.group-tab-meta {
-  display: none;
+.modal.group-modal {
+  max-height: min(80dvh, 620px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Element-style scrollbar: thin, transparent track, #909399 thumb that rests
+   at .3 and intensifies to .5 on hover. Visible at rest so touch devices
+   (which never :hover) still get a scroll affordance. */
+.group-modal-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(144, 147, 153, 0.3) transparent;
+}
+
+.group-modal-list::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.group-modal-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.group-modal-list::-webkit-scrollbar-thumb {
+  background: rgba(144, 147, 153, 0.3);
+  border-radius: 999px;
+  transition: background-color 0.25s ease;
+}
+
+.group-modal-list::-webkit-scrollbar-thumb:hover {
+  background: rgba(144, 147, 153, 0.5);
+}
+
+.group-opt {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 13px 4px;
+  font-size: 15px;
+  text-align: left;
+  color: var(--text);
+}
+
+.group-opt + .group-opt {
+  border-top: 1px solid var(--divider);
+}
+
+.group-opt:active {
+  background: var(--surface-2);
+}
+
+.group-opt.active {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.group-opt .check {
+  color: var(--accent);
+  font-size: 16px;
+  line-height: 1;
 }
 
 .stat-grid {

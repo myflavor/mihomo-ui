@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onActivated, ref } from 'vue'
 import { getProxies, selectProxy, testGroupDelay } from '../api'
+import { useMaskClose } from '../composables/useMaskClose'
 
 defineOptions({ name: 'Proxies' })
 
@@ -10,6 +11,10 @@ const activeGroup = ref('')
 const delays = ref({})
 const busy = ref(false)
 const filter = ref('')
+const pickerOpen = ref(false)
+const pickerMask = useMaskClose(() => {
+  pickerOpen.value = false
+})
 
 const current = computed(() => groups.value.find((g) => g.name === activeGroup.value))
 
@@ -53,6 +58,12 @@ async function pick(name) {
   } finally {
     busy.value = false
   }
+}
+
+function chooseGroup(name) {
+  activeGroup.value = name
+  filter.value = ''
+  pickerOpen.value = false
 }
 
 async function speedtest() {
@@ -120,16 +131,22 @@ onActivated(() => {
     <div v-else-if="!groups.length" class="card empty">暂无策略组。请先在「配置」添加订阅。</div>
 
     <template v-else>
-      <div class="group-tabs">
-        <button
-          v-for="g in groups"
-          :key="g.name"
-          class="group-tab"
-          :class="{ active: g.name === activeGroup }"
-          @click="activeGroup = g.name; filter = ''"
-        >
-          {{ g.name }}
-        </button>
+      <div
+        class="card group-pick-card"
+        role="button"
+        tabindex="0"
+        @click="pickerOpen = true"
+        @keydown.enter.space.prevent="pickerOpen = true"
+      >
+        <div class="row">
+          <div class="label">分组</div>
+          <div class="group-pick-value">
+            <span class="group-pick-name">{{ activeGroup || '未选择' }}</span>
+            <svg class="chev" viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
+              <path d="M2 4.5 L6 8.5 L10 4.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </div>
+        </div>
       </div>
 
       <div class="card group-card">
@@ -169,6 +186,32 @@ onActivated(() => {
           </div>
         </div>
       </div>
+
+      <Transition name="modal-fade">
+        <div
+          v-if="pickerOpen"
+          class="modal-mask"
+          @mousedown="pickerMask.onMousedown"
+          @click="pickerMask.onClick"
+        >
+          <div class="modal group-modal">
+            <h3>选择分组</h3>
+            <div class="group-modal-list">
+              <button
+                v-for="g in groups"
+                :key="g.name"
+                type="button"
+                class="group-opt"
+                :class="{ active: g.name === activeGroup }"
+                @click="chooseGroup(g.name)"
+              >
+                <span>{{ g.name }}</span>
+                <span v-if="g.name === activeGroup" class="check">✓</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </Transition>
     </template>
   </div>
 </template>
