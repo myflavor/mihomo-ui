@@ -10,7 +10,6 @@ const groups = ref([])
 const activeGroup = ref('')
 const delays = ref({})
 const busy = ref(false)
-const filter = ref('')
 const pickerOpen = ref(false)
 const pickerMask = useMaskClose(() => {
   pickerOpen.value = false
@@ -20,12 +19,9 @@ const current = computed(() => groups.value.find((g) => g.name === activeGroup.v
 
 const hiddenNodes = new Set(['COMPATIBLE', 'Pass', 'REJECT'])
 
-const filteredNodes = computed(() => {
-  const all = (current.value?.all || []).filter((n) => !hiddenNodes.has(String(n)))
-  const q = filter.value.trim().toLowerCase()
-  if (!q) return all
-  return all.filter((n) => String(n).toLowerCase().includes(q))
-})
+const filteredNodes = computed(() =>
+  (current.value?.all || []).filter((n) => !hiddenNodes.has(String(n)))
+)
 
 async function refresh() {
   try {
@@ -62,7 +58,6 @@ async function pick(name) {
 
 function chooseGroup(name) {
   activeGroup.value = name
-  filter.value = ''
   pickerOpen.value = false
 }
 
@@ -160,13 +155,6 @@ onActivated(() => {
             </div>
           </div>
         </div>
-
-        <input
-          v-if="(current?.all || []).length > 8"
-          v-model="filter"
-          class="field search-field"
-          placeholder="筛选节点…"
-        />
 
         <div class="list node-list">
           <button
